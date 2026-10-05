@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Questions and discussion
+    url: https://github.com/browser-b0X/marteloio/discussions
+    about: Ask how something works or share how you use Marteloio.

@@ -1,0 +1,8 @@
+# Normalize line endings so the repo clones correctly on every OS.
+
+# Unix shell scripts must stay LF or they break on macOS/Linux after cloning.
+*.sh   text eol=lf
+
+# Windows batch scripts use CRLF; cmd.exe label/goto/call parsing is
+# unreliable with LF-only files.
+*.bat  text eol=crlf

@@ -1,0 +1,54 @@
+name: Bug report
+description: Something in Marteloio doesn't work as described.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please use a made-up item, and never paste API keys, eBay credentials,
+        `.env`, `.marteloio-secrets.enc` or an unredacted `relay.log`. See SECURITY.md for security issues.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Switch to Bundle / lot
+        2. Type ...
+        3. Choose Generate listing
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      placeholder: e.g. main at abc1234, or the date you downloaded it
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options: [Windows 11, Windows 10, macOS, Linux, Other]
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: Browser
+      placeholder: e.g. Chrome 140, Firefox 143, Edge
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options: [Starting or stopping the app, Generating a listing, Listing HTML or eBay preview, Bundles, Look up or Find keywords, Templates or drafts, Settings or keys, Other]
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error messages or redacted log lines
+      render: text

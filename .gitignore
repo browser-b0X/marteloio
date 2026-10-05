@@ -1,0 +1,8 @@
+.env
+.ebay_token.json
+.marteloio-secrets.enc*
+.lanzalister-secrets.enc*
+*.log
+__pycache__/
+.venv/
+Claude outputs/

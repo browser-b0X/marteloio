@@ -1,0 +1,55 @@
+name: Offline regression checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  offline:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ['3.10', '3.14']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Python regression tests (temporary credentials only)
+        run: python -B -m unittest discover -s tests -p 'test_*.py'
+      - name: Listing normalization and content checks
+        run: node tests/test_listing_core.js
+      - name: Unix launcher syntax
+        if: runner.os == 'Linux'
+        run: |
+          for script in start-all.sh
+          do
+            bash -n "$script"
+          done
+      - name: Mocked Windows service-stop checks
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/test_stop_services.ps1
+      - name: Windows shortcut checks (temporary folders only)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/test_create_shortcuts.ps1
+      - name: Diff whitespace check
+        run: git diff --check
