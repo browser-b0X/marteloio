@@ -105,7 +105,7 @@ class ProviderFailureTests(unittest.TestCase):
             (error, status), call = self.completion(keys=keys)
             call.assert_not_called()
             self.assertEqual(status, 503)
-            self.assertEqual(error, {"error": "No AI provider key is configured. Add a key in Settings to start generating.",
+            self.assertEqual(error, {"error": "Connect an AI service first. It takes about 2 minutes with a free Google key.",
                                      "kind": "no_provider"})
 
     def test_unreadable_encrypted_store_is_a_503_without_provider_request(self):

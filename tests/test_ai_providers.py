@@ -32,7 +32,21 @@ class FakeResponse:
 
 
 def reply(text="{\"ok\": true}"):
+    # Answers must be JSON (a cut-off or non-JSON answer moves on): wrap plain words.
+    try:
+        json.loads(text)
+    except ValueError:
+        text = json.dumps({"answer": text})
     return FakeResponse({"choices": [{"message": {"role": "assistant", "content": text}}]})
+
+
+def said(text):
+    """The plain words a reply() fixture wrapped, or the answer as sent."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return text
+    return data["answer"] if isinstance(data, dict) and set(data) == {"answer"} else text
 
 
 def http_error(url, code, body=b"{}", headers=None):
@@ -79,7 +93,8 @@ class ProviderTests(unittest.TestCase):
         upstream = Upstream(routes)
         with patch.object(ai_providers, "_urlopen", side_effect=upstream):
             try:
-                result = ai_providers.chat(MESSAGES, keys=keys, **kwargs)
+                text, name, model = ai_providers.chat(MESSAGES, keys=keys, **kwargs)
+                result = (said(text), name, model)
             except ai_providers.NoProvider as failure:
                 result = failure
         return result, upstream
@@ -100,8 +115,8 @@ class ProviderTests(unittest.TestCase):
     def provider(self, keys, name):
         return next(p for p in ai_providers.status(keys)["providers"] if p["id"] == name)
 
-    def test_fallback_order_is_gemini_groq_openrouter(self):
-        self.assertEqual(ai_providers.ORDER, ("gemini", "groq", "openrouter"))
+    def test_fallback_order_is_freellmapi_gemini_groq_openrouter(self):
+        self.assertEqual(ai_providers.ORDER, ("freellmapi", "gemini", "groq", "openrouter"))
         result, upstream = self.run_chat({"gemini": reply("gemini")})
         self.assertEqual(result, ("gemini", "gemini", "gemini-flash-latest"))
         payload = upstream.calls[0][2]
@@ -154,7 +169,7 @@ class ProviderTests(unittest.TestCase):
                                           "groq": reply("groq")})
         self.assertEqual(result[:2], ("groq", "groq"))
         status = ai_providers.status(ALL_KEYS)
-        gemini = status["providers"][0]
+        gemini = self.provider(ALL_KEYS, "gemini")
         self.assertEqual((gemini["id"], gemini["state"], gemini["configured"]), ("gemini", "rate_limited", True))
         self.assertTrue(115 <= gemini["retry_in"] <= 121)
         self.assertTrue(status["ready"])
@@ -198,7 +213,7 @@ class ProviderTests(unittest.TestCase):
         self.run_chat({"gemini": http_error("x", 403), "groq": http_error("g", 429), "openrouter": reply()})
         ai_providers.reset({"GEMINI_API_KEY"})
         states = {p["id"]: p["state"] for p in ai_providers.status(ALL_KEYS)["providers"]}
-        self.assertEqual(states, {"gemini": "ready", "groq": "rate_limited", "openrouter": "ready"})
+        self.assertEqual(states, {"freellmapi": "off", "gemini": "ready", "groq": "rate_limited", "openrouter": "ready"})
 
     def test_retired_model_walks_fallbacks_then_account_list(self):
         retired = http_error("g", 404, b'{"error": {"message": "The model does not exist"}}')
@@ -242,7 +257,7 @@ class ProviderTests(unittest.TestCase):
         result, upstream = self.run_chat({"gemini": empty, "groq": FakeResponse(b"not json"), "openrouter": reply("o")})
         self.assertEqual(result[:2], ("o", "openrouter"))
         states = {p["id"]: p["state"] for p in ai_providers.status(ALL_KEYS)["providers"]}
-        self.assertEqual(states, {"gemini": "bad_response", "groq": "bad_response", "openrouter": "ready"})
+        self.assertEqual(states, {"freellmapi": "off", "gemini": "bad_response", "groq": "bad_response", "openrouter": "ready"})
         self.assertIn("reasoning", ai_providers.details()["gemini"])
 
     def test_deadline_bounds_the_whole_call(self):
@@ -270,9 +285,10 @@ class ProviderTests(unittest.TestCase):
         # An OpenRouter-style key is redacted even when it is not the key in use.
         self.assertNotIn("0a1b2c3d", ai_providers._redact("leaked %s here" % other, ""))
         self.assertNotIn("sk-or-v1-short1234", ai_providers._redact("leaked sk-or-v1-short1234", ""))
-        status = json.dumps(ai_providers.status({"OPENROUTER_API_KEY": key}))
-        self.assertNotIn(key, status)
-        self.assertNotIn(key[-4:], status)
+        status = ai_providers.status({"OPENROUTER_API_KEY": key})
+        self.assertNotIn(key[:-4], json.dumps(status))
+        # Only the last four characters are shown, so the seller can tell keys apart.
+        self.assertEqual(self.provider({"OPENROUTER_API_KEY": key}, "openrouter")["key_hint"], key[-4:])
 
     def test_no_keys_is_no_provider_without_requests(self):
         for keys in ({}, {"GROQ_API_KEY": "", "OPENROUTER_API_KEY": "   "}, None):
@@ -280,8 +296,10 @@ class ProviderTests(unittest.TestCase):
             self.assertEqual((result.code, upstream.calls), ("no_provider", []))
         status = ai_providers.status({})
         self.assertEqual(status["ready"], False)
-        self.assertEqual([p["state"] for p in status["providers"]], ["off", "off", "off"])
-        self.assertEqual(set(status["providers"][0]), {"id", "label", "configured", "state", "retry_in", "model"})
+        self.assertEqual([p["state"] for p in status["providers"]], ["off", "off", "off", "off"])
+        fields = {"id", "label", "configured", "enabled", "state", "retry_in", "model", "key_hint", "checked"}
+        self.assertEqual(set(status["providers"][1]), fields)
+        self.assertEqual(set(status["providers"][0]), fields | {"base_url"})
 
     def test_invalid_key_characters_are_never_sent(self):
         result, upstream = self.run_chat({}, keys={"GROQ_API_KEY": "has space"})

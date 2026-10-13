@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#111318" media="(prefers-color-scheme: dark)">
   <meta name="theme-color" content="#F7F7F5" media="(prefers-color-scheme: light)">
-  <meta name="description" content="Marteloio turns the notes you jot about an item into an eBay title and description you can paste straight in. Free, open source, and it runs on your own PC with free AI keys.">
+  <meta name="description" content="Marteloio turns the notes you jot about an item into an eBay title and description you can paste straight in. Free and open source, with a one-click Windows installer and a guided setup for free AI keys. It runs on your own PC.">
   <meta property="og:title" content="Marteloio — Details, drafted.">
   <meta property="og:description" content="Your notes in. A finished eBay listing out. Free, open-source listing software that runs on your own PC.">
   <meta property="og:type" content="website">
@@ -164,6 +164,10 @@
     .crop { width: 100%; border-radius: 14px 14px 0 0; border: 1px solid var(--line); border-bottom: 0; overflow: hidden; box-shadow: 0 18px 40px rgba(0, 0, 0, .18); }
     .crop img { width: 100%; }
     .crop.h-380 { height: 380px; } .crop.h-440 { height: 440px; } .crop.h-480 { height: 480px; }
+    .frame { border-radius: 14px; border: 1px solid var(--line); overflow: hidden; box-shadow: 0 18px 40px rgba(0, 0, 0, .18); }
+    /* Zoomed on the welcome dialog in the middle of the full-screen shot (percent margins follow the frame's width). */
+    .frame.zoom { aspect-ratio: 8 / 7; }
+    .frame.zoom img { width: 166.7%; max-width: none; height: auto; margin: -11.8% 0 0 -33.3%; }
     .listing-pair { display: grid; grid-template-columns: minmax(0, 1fr) 210px; gap: 18px; align-items: start; }
     .phone { border-radius: 26px 26px 0 0; border: 8px solid #20242b; border-bottom: 0; overflow: hidden; height: 440px; background: #fff; }
     [data-theme="light"] .phone { border-color: #111318; }
@@ -212,6 +216,43 @@
     .key { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 16px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); text-decoration: none; color: var(--ink); font-weight: 700; font-size: 15px; }
     .key small { color: var(--dim); font-weight: 600; font-size: 13px; }
     .key:hover { border-color: var(--orange); }
+    .install h3 { font-size: 24px; }
+    .install .intro { margin-top: 10px; font-size: 15.5px; }
+
+    /* Hero download line */
+    .cta-meta { margin-top: 14px; font-size: 14px; font-weight: 600; color: var(--dim); }
+    .cta-meta a { color: var(--ink); }
+    .cta-meta a:hover { color: var(--orange-text); }
+
+    /* Install in three steps: schematic drawings of the screens, labelled with the real button names. */
+    .guide-steps { list-style: none; margin: 46px 0 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+    .guide-steps .card { padding: 22px 22px 26px; }
+    .guide-steps h3 { display: flex; align-items: center; gap: 12px; font-size: 21px; }
+    .guide-steps .dot { width: 30px; height: 30px; flex-shrink: 0; font-size: 13.5px; }
+    .guide-steps p { margin-top: 10px; font-size: 15px; color: var(--body); }
+    .guide-steps b { color: var(--ink); }
+    .guide-art { display: block; width: 100%; height: auto; margin-bottom: 20px; border-radius: 14px; background: var(--bg-2); border: 1px solid var(--line); }
+    .ga-win { fill: var(--panel); stroke: var(--line-hi); stroke-width: 1; }
+    .ga-bar { fill: var(--panel-2); }
+    .ga-rule { stroke: var(--line-hi); stroke-width: 1; }
+    .ga-ph { fill: var(--line-hi); }
+    .ga-icon { fill: none; stroke: var(--dim); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+    .ga-h { fill: var(--ink); font: 700 13.5px var(--font-brand); }
+    .ga-t { fill: var(--ink); font: 700 11px var(--font); }
+    .ga-s { fill: var(--dim); font: 600 10.5px var(--font); }
+    .ga-link { fill: var(--orange-text); font: 700 11.5px var(--font); text-decoration: underline; }
+    .ga-btn { fill: var(--panel); stroke: var(--line-hi); }
+    .ga-btn-t { fill: var(--ink); font: 700 11px var(--font); text-anchor: middle; }
+    .ga-hot { fill: var(--orange); }
+    .ga-hot-t { fill: #111318; font: 800 11px var(--font); text-anchor: middle; }
+    .ga-num { fill: var(--ink); }
+    .ga-num-t { fill: var(--bg); font: 700 10px var(--font-brand); text-anchor: middle; }
+    .ga-chev { fill: none; stroke: var(--orange-text); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+    .ga-tick { fill: none; stroke: #111318; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    .dl-row { display: flex; flex-wrap: wrap; align-items: center; gap: 14px 22px; margin-top: 26px; }
+    .dl-row p { flex: 1 1 360px; font-size: 14px; color: var(--dim); }
+    .dl-row p b { color: var(--ink); }
+    .dl-row code { overflow-wrap: anywhere; }
 
     /* FAQ */
     .faq { margin-top: 40px; display: grid; gap: 12px; max-width: 860px; }
@@ -258,6 +299,11 @@
       .steps { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 34px; }
       .steps::before { display: none; }
       .feedback { grid-template-columns: minmax(0, 1fr); padding: 34px 26px; }
+      .guide-steps { grid-template-columns: minmax(0, 1fr); }
+      .guide-steps .card { display: grid; grid-template-columns: minmax(0, 320px) minmax(0, 1fr); column-gap: 26px; align-items: center; }
+      .guide-steps .guide-art { grid-row: span 2; margin: 0; }
+      .guide-steps h3 { align-self: end; }
+      .guide-steps p { align-self: start; }
     }
     @media (max-width: 720px) {
       nav.links a.hide-sm { display: none; }
@@ -270,6 +316,8 @@
       section { padding-top: 72px; }
       .card { padding: 22px; } .card-media { margin: 20px -22px -22px; padding: 0 22px; }
       .crop.h-380, .crop.h-440, .crop.h-480 { height: 320px; }
+      .guide-steps .card { display: block; }
+      .guide-steps .guide-art { margin-bottom: 18px; }
     }
     @media (max-width: 420px) { .brand b { font-size: 19px; } nav.links { gap: 0; } nav.links a { padding: 8px 8px; } }
   </style>
@@ -318,28 +366,30 @@
           <h1 id="hero-title">Your notes in.<br>A finished listing <em>out.</em></h1>
           <p class="lead">Marteloio turns the notes you jot about an item into an eBay title and description you can paste straight in. It runs on your own PC, works with free AI keys, and leaves every fact for you to check.</p>
           <div class="cta">
-            <a class="btn btn-primary" href="#install"><svg class="icon"><use href="#i-down"/></svg>Get Marteloio</a>
-            <a class="btn btn-ghost" href="#how">See how it works <svg class="icon"><use href="#i-arrow"/></svg></a>
+            <a class="btn btn-primary" href="https://github.com/browser-b0X/marteloio/releases/latest/download/Marteloio-Setup.exe"><svg class="icon"><use href="#i-down"/></svg>Download for Windows</a>
+            <a class="btn btn-ghost" href="#install">How to install <svg class="icon"><use href="#i-arrow"/></svg></a>
           </div>
+          <p class="cta-meta">Free · Windows 10 and 11 · about 12 MB · <a href="https://github.com/browser-b0X/marteloio#mac-linux-or-running-from-source">Mac or Linux? Run from source</a></p>
         </div>
         <ul class="checks" aria-label="At a glance">
           <li><svg class="icon"><use href="#i-check"/></svg><span>Free and open source<small>MIT license, no account, no subscription</small></span></li>
-          <li><svg class="icon"><use href="#i-check"/></svg><span>Runs on your PC<small>Drafts stay in your browser; keys stay on your computer</small></span></li>
-          <li><svg class="icon"><use href="#i-check"/></svg><span>Free AI keys, automatic fallback<small>Google Gemini, Groq and OpenRouter</small></span></li>
+          <li><svg class="icon"><use href="#i-check"/></svg><span>Set up in minutes<small>One Windows installer, a guided setup and a one-minute tour</small></span></li>
+          <li><svg class="icon"><use href="#i-check"/></svg><span>Free AI keys, automatic fallback<small>Google Gemini, Groq, OpenRouter and FreeLLMAPI</small></span></li>
           <li><svg class="icon"><use href="#i-check"/></svg><span>Never posts for you<small>You review, copy and paste into eBay</small></span></li>
         </ul>
       </div>
       <figure class="shot reveal" style="margin-inline:0">
-        <div class="shot-bar" aria-hidden="true"><i></i><i></i><i></i><span>127.0.0.1:8080</span></div>
+        <div class="shot-bar" aria-hidden="true"><i></i><i></i><i></i><span>localhost:8080</span></div>
         <img class="theme-dark-only" src="screenshots/app-dark.webp" width="1800" height="1200" alt="Marteloio in dark mode: seller notes for a film camera on the left, the drafted title with an 80-character ruler and the styled listing preview on the right" fetchpriority="high">
         <img class="theme-light-only" src="screenshots/app-light.webp" width="1800" height="1200" alt="Marteloio in light mode: seller notes for a film camera on the left, the drafted title with an 80-character ruler and the styled listing preview on the right" loading="lazy">
       </figure>
-      <p class="caption">Shown with a sample item, not real seller data.</p>
+      <p class="caption">Screenshots show made-up items, not real seller data.</p>
       <div class="works" aria-label="Works with">
         <span>Works with</span>
         <span class="chip"><i style="background:#4285F4"></i>Google Gemini</span>
         <span class="chip"><i style="background:#F55036"></i>Groq</span>
         <span class="chip"><i style="background:#8B5CF6"></i>OpenRouter</span>
+        <span class="chip"><i style="background:#14B8A6"></i>FreeLLMAPI</span>
         <span class="chip"><i style="background:#27C281"></i>eBay Browse API <small style="color:var(--dim);font-weight:600">optional</small></span>
       </div>
     </div>
@@ -354,7 +404,7 @@
       </div>
       <ol class="steps">
         <li class="reveal"><span class="dot">1</span><h3>Describe</h3><p>Type the model, what's included, what you tested and every flaw. Pick the condition yourself.</p></li>
-        <li class="reveal"><span class="dot">2</span><h3>Generate</h3><p>One request drafts a title, description, item specifics and highlights. If one AI provider is busy, the next one answers.</p></li>
+        <li class="reveal"><span class="dot">2</span><h3>Generate</h3><p>One request drafts a title, description, item specifics and highlights. If one AI service is busy, the next one answers.</p></li>
         <li class="reveal"><span class="dot">3</span><h3>Review</h3><p>Check the title against the 80-character ruler, edit any section as plain text, or regenerate just one part.</p></li>
         <li class="reveal"><span class="dot">4</span><h3>Copy</h3><p>Copy the HTML into eBay's description editor. Preview it at desktop and phone width first.</p></li>
       </ol>
@@ -392,21 +442,38 @@
           <div class="tag">Bundles and lots</div>
           <h3>Bundles that fill themselves in.</h3>
           <p>Describe the lot once. Each line becomes an item card and a What's included chip, with no AI request. Filled cards fold to a single line; brands are collected for you.</p>
-          <div class="card-media"><div class="crop h-480"><img class="theme-dark-only" src="screenshots/bundle-dark.webp" width="760" height="1581" alt="A bundle described in one box, split into six item cards, each folded to one line with its brand and condition" loading="lazy"><img class="theme-light-only" src="screenshots/bundle-light.webp" width="760" height="1581" alt="A bundle described in one box, split into six item cards, each folded to one line with its brand and condition" loading="lazy"></div></div>
+          <div class="card-media"><div class="crop h-480"><img class="theme-dark-only" src="screenshots/bundle-dark.webp" width="760" height="1655" alt="A bundle described in one box, split into six item cards, each folded to one line with its brand and condition" loading="lazy"><img class="theme-light-only" src="screenshots/bundle-light.webp" width="760" height="1655" alt="A bundle described in one box, split into six item cards, each folded to one line with its brand and condition" loading="lazy"></div></div>
         </article>
 
         <article class="card span-3 reveal">
           <div class="tag">Reference lookup</div>
           <h3>Real specs, only when you accept them.</h3>
           <p>Search other sellers' eBay listings by name or barcode, review the specifications they list, and accept one as a labelled reference. Nothing is filled in behind your back.</p>
-          <div class="card-media"><div class="crop h-480"><img class="theme-dark-only" src="screenshots/lookup-dark.webp" width="760" height="1277" alt="Eight matching eBay listings in a collapsible list, with one selected and its specifications waiting for Accept reference" loading="lazy"><img class="theme-light-only" src="screenshots/lookup-light.webp" width="760" height="1277" alt="Eight matching eBay listings in a collapsible list, with one selected and its specifications waiting for Accept reference" loading="lazy"></div></div>
+          <div class="card-media"><div class="crop h-480"><img class="theme-dark-only" src="screenshots/lookup-dark.webp" width="760" height="1342" alt="Eight matching eBay listings in a collapsible list, with one selected and its specifications waiting for Accept reference" loading="lazy"><img class="theme-light-only" src="screenshots/lookup-light.webp" width="760" height="1342" alt="Eight matching eBay listings in a collapsible list, with one selected and its specifications waiting for Accept reference" loading="lazy"></div></div>
+        </article>
+
+        <article class="card span-6 reveal">
+          <div class="split">
+            <div>
+              <div class="tag">New in 0.2</div>
+              <h3>Set up in minutes, without help.</h3>
+              <p>A short welcome connects a free AI service: paste a key and Marteloio works out which service it is and checks that it works. A free Google Gemini key takes about two minutes to get.</p>
+              <ul class="rules">
+                <li><svg class="icon"><use href="#i-check"/></svg>A one-minute tour of the real screen, in six stops</li>
+                <li><svg class="icon"><use href="#i-check"/></svg>A Get set up guide that ticks itself off until your first listing is in eBay</li>
+                <li><svg class="icon"><use href="#i-check"/></svg>A tip beside every field, and Help (?) whenever you want the tour again</li>
+                <li><svg class="icon"><use href="#i-check"/></svg>Messages in plain words that say what to do next, then fade on their own</li>
+              </ul>
+            </div>
+            <div class="frame zoom"><img class="theme-dark-only" src="screenshots/welcome-dark.webp" width="1800" height="1200" alt="The welcome setup: three steps (Connect AI, Your shop, Quick tour), a box to paste your key, and four steps to get a free Google key" loading="lazy"><img class="theme-light-only" src="screenshots/welcome-light.webp" width="1800" height="1200" alt="The welcome setup: three steps (Connect AI, Your shop, Quick tour), a box to paste your key, and four steps to get a free Google key" loading="lazy"></div>
+          </div>
         </article>
 
         <article class="card span-2 reveal">
           <div class="tag">Templates</div>
           <h3>Sell it again without asking the AI again.</h3>
           <p>Save a finished listing as a template. When you start a similar item, Marteloio suggests it, and Regenerate rewrites one section with a short request instead of a full one.</p>
-          <div class="card-media"><div class="crop h-380"><img class="theme-dark-only" src="screenshots/templates-dark.webp" width="760" height="977" alt="The Drafts menu with recent drafts and a saved template called Film camera body" loading="lazy"><img class="theme-light-only" src="screenshots/templates-light.webp" width="760" height="977" alt="The Drafts menu with recent drafts and a saved template called Film camera body" loading="lazy"></div></div>
+          <div class="card-media"><div class="crop h-380"><img class="theme-dark-only" src="screenshots/templates-dark.webp" width="760" height="1015" alt="The Drafts menu with recent drafts and a saved template called Film camera body" loading="lazy"><img class="theme-light-only" src="screenshots/templates-light.webp" width="760" height="1015" alt="The Drafts menu with recent drafts and a saved template called Film camera body" loading="lazy"></div></div>
         </article>
 
         <article class="card span-2 reveal">
@@ -423,10 +490,10 @@
 
         <article class="card span-2 reveal">
           <div class="tag">Free AI keys</div>
-          <h3>One busy provider doesn't stop you.</h3>
-          <p>Add a free key for any of these. Marteloio tries them in order and skips one that is rate-limited until it's ready again.</p>
-          <div class="flow" aria-label="Provider order">
-            <span class="pill">Gemini</span><svg class="icon arrow"><use href="#i-arrow"/></svg><span class="pill">Groq</span><svg class="icon arrow"><use href="#i-arrow"/></svg><span class="pill">OpenRouter</span>
+          <h3>One busy service doesn't stop you.</h3>
+          <p>Paste a free key for any of these, or use FreeLLMAPI on your PC: Marteloio finds it. It tries them in order and skips one that is busy until it's ready again.</p>
+          <div class="flow" role="group" aria-label="The order Marteloio tries them in">
+            <span class="pill">FreeLLMAPI</span><svg class="icon arrow"><use href="#i-arrow"/></svg><span class="pill">Gemini</span><svg class="icon arrow"><use href="#i-arrow"/></svg><span class="pill">Groq</span><svg class="icon arrow"><use href="#i-arrow"/></svg><span class="pill">OpenRouter</span>
           </div>
           <div class="ruler" aria-hidden="true">
             <div class="ruler-title">Canon AE-1 Program 35mm SLR Film Camera Body Silver, Tested</div>
@@ -457,7 +524,7 @@
         <div class="card reveal">
           <h3><svg class="icon"><use href="#i-send"/></svg>Sent when you ask</h3>
           <ul>
-            <li>Your notes and accepted references, to the AI provider whose key you added</li>
+            <li>Your notes and accepted references, to the AI service you set up</li>
             <li>Product names or barcodes, to eBay when you choose Look up or Find keywords</li>
           </ul>
         </div>
@@ -477,38 +544,116 @@
     <div class="wrap">
       <div class="sec-head reveal">
         <span class="kicker">Install</span>
-        <h2 id="install-title">Up and running in a few minutes.</h2>
-        <p>Marteloio needs Python 3.10 or newer and nothing else: no packages to install and no build step.</p>
+        <h2 id="install-title">Install in three steps.</h2>
+        <p>Marteloio-Setup.exe brings everything Marteloio needs, its own Python included. It installs for your Windows account only, without administrator rights. Windows may warn you twice on the way; here is what to click.</p>
+      </div>
+      <ol class="guide-steps">
+        <li class="card reveal">
+          <svg class="guide-art" viewBox="0 0 320 190" role="img" aria-labelledby="ga1-title" focusable="false">
+            <title id="ga1-title">Drawing of a browser's download list saying Marteloio-Setup.exe isn't commonly downloaded: choose the … button and Keep, then Show more and Keep anyway.</title>
+            <rect class="ga-win" x="8" y="8" width="304" height="174" rx="10"/>
+            <path class="ga-bar" d="M8 18a10 10 0 0 1 10-10h284a10 10 0 0 1 10 10v14H8z"/>
+            <rect class="ga-ph" x="20" y="14" width="150" height="12" rx="6"/>
+            <path class="ga-icon" d="M290 13v8m-4-4 4 4 4-4m-9 7h10"/>
+            <rect class="ga-win" x="60" y="38" width="244" height="74" rx="8"/>
+            <path class="ga-icon" d="M72 49h9l5 5v15h-14zm9 0v5h5"/>
+            <text class="ga-t" x="96" y="59">Marteloio-Setup.exe</text>
+            <text class="ga-s" x="96" y="73">isn't commonly downloaded</text>
+            <rect class="ga-hot" x="266" y="46" width="28" height="18" rx="5"/>
+            <text class="ga-hot-t" x="280" y="58.5">…</text>
+            <rect class="ga-win" x="222" y="79" width="76" height="26" rx="6"/>
+            <rect class="ga-hot" x="226" y="83" width="68" height="18" rx="4"/>
+            <text class="ga-hot-t" x="260" y="95.5">Keep</text>
+            <rect class="ga-win" x="16" y="118" width="288" height="56" rx="8"/>
+            <rect class="ga-ph" x="28" y="128" width="200" height="5" rx="2.5"/>
+            <rect class="ga-ph" x="28" y="138" width="150" height="5" rx="2.5"/>
+            <text class="ga-link" x="44" y="162">Show more</text>
+            <path class="ga-chev" d="M109 156.5l3 3 3-3"/>
+            <rect class="ga-hot" x="196" y="149" width="96" height="20" rx="5"/>
+            <text class="ga-hot-t" x="244" y="162.5">Keep anyway</text>
+            <circle class="ga-num" cx="255" cy="55" r="7.5"/><text class="ga-num-t" x="255" y="58.6">1</text>
+            <circle class="ga-num" cx="211" cy="92" r="7.5"/><text class="ga-num-t" x="211" y="95.6">2</text>
+            <circle class="ga-num" cx="32" cy="158" r="7.5"/><text class="ga-num-t" x="32" y="161.6">3</text>
+            <circle class="ga-num" cx="184" cy="159" r="7.5"/><text class="ga-num-t" x="184" y="162.6">4</text>
+          </svg>
+          <h3><span class="dot">1</span>Download</h3>
+          <p>Get Marteloio-Setup.exe. If your browser says it isn't commonly downloaded, keep it. In Edge: <b>…</b> › <b>Keep</b> › <b>Show more</b> › <b>Keep anyway</b>.</p>
+        </li>
+        <li class="card reveal">
+          <svg class="guide-art" viewBox="0 0 320 190" role="img" aria-labelledby="ga2-title" focusable="false">
+            <title id="ga2-title">Drawing of the Windows protected your PC message: choose More info, then Run anyway.</title>
+            <rect class="ga-win" x="8" y="8" width="304" height="174" rx="10"/>
+            <path class="ga-icon" d="M30 21l8-3 8 3v7c0 5.5-8 9-8 9s-8-3.5-8-9z"/>
+            <text class="ga-h" x="56" y="33">Windows protected your PC</text>
+            <rect class="ga-ph" x="30" y="49" width="244" height="5" rx="2.5"/>
+            <rect class="ga-ph" x="30" y="59" width="196" height="5" rx="2.5"/>
+            <text class="ga-link" x="46" y="85">More info</text>
+            <text class="ga-s" x="30" y="106">App: Marteloio-Setup.exe</text>
+            <text class="ga-s" x="30" y="121">Publisher: Unknown publisher</text>
+            <line class="ga-rule" x1="9" y1="134" x2="311" y2="134"/>
+            <rect class="ga-hot" x="140" y="146" width="80" height="22" rx="6"/>
+            <text class="ga-hot-t" x="180" y="160.8">Run anyway</text>
+            <rect class="ga-btn" x="228" y="146" width="72" height="22" rx="6"/>
+            <text class="ga-btn-t" x="264" y="160.8">Don't run</text>
+            <circle class="ga-num" cx="34" cy="81" r="7.5"/><text class="ga-num-t" x="34" y="84.6">1</text>
+            <circle class="ga-num" cx="128" cy="157" r="7.5"/><text class="ga-num-t" x="128" y="160.6">2</text>
+          </svg>
+          <h3><span class="dot">2</span>Open it</h3>
+          <p>Windows may show <b>Windows protected your PC</b>, because the installer isn't code-signed yet. Choose <b>More info</b>, then <b>Run anyway</b>.</p>
+        </li>
+        <li class="card reveal">
+          <svg class="guide-art" viewBox="0 0 320 190" role="img" aria-labelledby="ga3-title" focusable="false">
+            <title id="ga3-title">Drawing of the Marteloio installer: Add a Marteloio shortcut to the desktop is ticked; choose Install.</title>
+            <rect class="ga-win" x="8" y="8" width="304" height="174" rx="10"/>
+            <path class="ga-bar" d="M8 18a10 10 0 0 1 10-10h284a10 10 0 0 1 10 10v12H8z"/>
+            <use href="#logo" x="16" y="11" width="20" height="16"/>
+            <rect class="ga-ph" x="42" y="16" width="64" height="6" rx="3"/>
+            <path class="ga-icon" d="M276 19h8m8-4 7 7m0-7-7 7"/>
+            <text class="ga-h" x="24" y="54">Install Marteloio</text>
+            <text class="ga-s" x="24" y="70">Marteloio will be installed for your</text>
+            <text class="ga-s" x="24" y="83">Windows account only.</text>
+            <rect class="ga-hot" x="24" y="97" width="12" height="12" rx="3"/>
+            <path class="ga-tick" d="M27 103.2l2.3 2.3 3.9-4.6"/>
+            <text class="ga-t" x="42" y="107">Add a Marteloio shortcut to the desktop</text>
+            <line class="ga-rule" x1="9" y1="134" x2="311" y2="134"/>
+            <rect class="ga-hot" x="158" y="146" width="66" height="22" rx="6"/>
+            <text class="ga-hot-t" x="191" y="160.8">Install</text>
+            <rect class="ga-btn" x="232" y="146" width="68" height="22" rx="6"/>
+            <text class="ga-btn-t" x="266" y="160.8">Cancel</text>
+            <circle class="ga-num" cx="146" cy="157" r="7.5"/><text class="ga-num-t" x="146" y="160.6">1</text>
+          </svg>
+          <h3><span class="dot">3</span>Install</h3>
+          <p>Tick or untick the desktop shortcut and choose <b>Install</b>. On the last page choose <b>Finish</b>: Marteloio opens in your browser with a short welcome setup.</p>
+        </li>
+      </ol>
+      <div class="dl-row reveal">
+        <a class="btn btn-primary" href="https://github.com/browser-b0X/marteloio/releases/latest/download/Marteloio-Setup.exe"><svg class="icon"><use href="#i-down"/></svg>Download for Windows</a>
+        <p><b>Free · Windows 10 and 11 · about 12 MB.</b> The installer isn't code-signed yet; the plan is to apply to the <a href="https://signpath.org/">SignPath Foundation</a>, which signs open-source projects for free. To check your download: in PowerShell, <code>Get-FileHash .\Marteloio-Setup.exe -Algorithm SHA256</code> should show the same value as <a href="https://github.com/browser-b0X/marteloio/releases/latest/download/Marteloio-Setup.exe.sha256">Marteloio-Setup.exe.sha256</a>.</p>
       </div>
       <div class="install">
         <div class="reveal">
-          <ol>
-            <li><div><b>Install Python 3.10 or newer</b><span>From <a href="https://www.python.org/downloads/">python.org</a> or the Microsoft Store.</span></div></li>
-            <li><div><b>Download Marteloio</b><span><a href="https://github.com/browser-b0X/marteloio/archive/refs/heads/main.zip">Download the ZIP</a> and unzip it anywhere, or clone the repository.</span></div></li>
-            <li><div><b>Start it</b><span>Double-click <code>start-all.bat</code> on Windows. Your browser opens at <code>127.0.0.1:8080</code>.</span></div></li>
-            <li><div><b>Add a free AI key</b><span>Open <strong>Settings</strong>, paste a key for any provider below and save. One key is enough.</span></div></li>
-            <li><div><b>Add a shortcut (optional)</b><span>Double-click <code>create-shortcuts.bat</code> once to put Marteloio in the Start menu and on your desktop, with its own icon. Pin it to the taskbar from the Start menu.</span></div></li>
-          </ol>
-          <a class="btn btn-primary dl" href="https://github.com/browser-b0X/marteloio/archive/refs/heads/main.zip"><svg class="icon"><use href="#i-down"/></svg>Download ZIP <small>from GitHub</small></a>
+          <h3>Then connect a free AI service.</h3>
+          <p class="intro">The welcome setup asks for one key. Paste it, and Marteloio recognises the service and tests it. One is enough; a second one is a backup when the first is busy.</p>
           <div class="keys">
-            <a class="key" href="https://aistudio.google.com/apikey">Google Gemini <small>Google AI Studio →</small></a>
+            <a class="key" href="https://aistudio.google.com/app/apikey">Google Gemini <small>easiest, about 2 minutes →</small></a>
             <a class="key" href="https://console.groq.com/keys">Groq <small>Groq console →</small></a>
-            <a class="key" href="https://openrouter.ai/keys">OpenRouter <small>free models by default →</small></a>
+            <a class="key" href="https://openrouter.ai/keys">OpenRouter <small>free models only →</small></a>
+            <a class="key" href="https://github.com/tashfeenahmed/freellmapi">FreeLLMAPI <small>runs on your PC; Marteloio finds it →</small></a>
           </div>
-          <p class="note">Windows is the tested platform. A macOS/Linux launcher (<code>start-all.sh</code>) is included but not yet verified. Free tiers have limits set by each provider.</p>
+          <p class="note">Free tiers have limits set by each service. Next time, open Marteloio from the Start menu or the desktop. To update, run a newer Marteloio-Setup.exe: your keys and drafts stay. The <a href="https://github.com/browser-b0X/marteloio/blob/main/docs/GUIDE.md">user guide</a> covers the rest.</p>
         </div>
         <div class="terminal reveal">
-          <div class="terminal-head"><span>From a terminal</span><button class="copy-btn" type="button" data-copy="cmd">Copy</button></div>
-<pre id="cmd" tabindex="0" aria-label="Install commands"><span class="c"># Get the code</span>
-<span class="p">&gt;</span> git clone https://github.com/browser-b0X/marteloio.git
-<span class="p">&gt;</span> cd marteloio
-
-<span class="c"># Windows</span>
-<span class="p">&gt;</span> start-all.bat
+          <div class="terminal-head"><span>Mac or Linux? Run from source</span><button class="copy-btn" type="button" data-copy="cmd">Copy</button></div>
+<pre id="cmd" tabindex="0" aria-label="Commands to run Marteloio from source"><span class="c"># Needs Python 3.10 or newer, nothing else</span>
+<span class="p">$</span> git clone https://github.com/browser-b0X/marteloio.git
+<span class="p">$</span> cd marteloio
 
 <span class="c"># macOS / Linux (not yet verified)</span>
-<span class="p">$</span> bash start-all.sh</pre>
-          <div class="terminal-foot">Stop it with <code>stop.bat</code> or the Stop Marteloio shortcut. To use another port, set <code>PORT</code> in <code>.env</code>.</div>
+<span class="p">$</span> bash start-all.sh
+
+<span class="c"># Windows, without the installer</span>
+<span class="p">&gt;</span> start-all.bat</pre>
+          <div class="terminal-foot">Your browser opens at <code>localhost:8080</code>. Stop it with Settings › About › Quit Marteloio. To use another port, set <code>PORT</code> in <code>.env</code>.</div>
         </div>
       </div>
     </div>
@@ -521,11 +666,14 @@
         <h2 id="faq-title">Good to know.</h2>
       </div>
       <div class="faq">
-        <details class="reveal"><summary>Is it really free?</summary><p>Yes. Marteloio is MIT-licensed open source with no paid tier. The AI comes from your own provider keys; Gemini, Groq and OpenRouter each offer a free tier with limits they set. Templates and single-section regeneration help you stay inside them.</p></details>
+        <details class="reveal"><summary>Is it really free?</summary><p>Yes. Marteloio is MIT-licensed open source with no paid tier. The AI comes from your own keys: Google Gemini, Groq and OpenRouter each offer a free tier with limits they set, and FreeLLMAPI spreads requests over many free services. Templates and single-section regeneration help you stay inside them.</p></details>
+        <details class="reveal"><summary>Why does Windows warn me about the installer?</summary><p>Marteloio-Setup.exe isn't code-signed yet, so Windows SmartScreen doesn't know who made it and shows "Windows protected your PC". Choose More info, then Run anyway. The plan is to apply to the SignPath Foundation, which signs open-source projects for free. Until then you can <a href="https://github.com/browser-b0X/marteloio/blob/main/SECURITY.md#checking-the-installer">check the file's SHA-256</a> against the one on the release page.</p></details>
+        <details class="reveal"><summary>How do I update or uninstall it?</summary><p>To update, download the newer Marteloio-Setup.exe and run it. It closes Marteloio, replaces the program and keeps your keys, settings and drafts. To uninstall, open Windows Settings › Apps, choose Marteloio, then Uninstall. It asks whether to remove your saved keys and settings too; the default keeps them.</p></details>
         <details class="reveal"><summary>Does it post listings to eBay for me?</summary><p>No. Marteloio drafts the title and the description HTML. You copy them into eBay's listing form, check the preview, and publish yourself.</p></details>
         <details class="reveal"><summary>Do I need an eBay developer account?</summary><p>Only for Look up and Find keywords, which search other sellers' listings through eBay's Browse API. A free eBay Developers account gives you the keys. Everything else works without it.</p></details>
+        <details class="reveal"><summary>Does it work on a Mac or Linux?</summary><p>The installer is for Windows 10 and 11. On a Mac or Linux you can run Marteloio from source with Python 3.10 or newer: <code>bash start-all.sh</code> starts it. That launcher is included but not yet verified, so please report what you find.</p></details>
         <details class="reveal"><summary>What is the small credit at the bottom of a listing?</summary><p>Generated listings end with a short "Listing created with Marteloio" line. It follows eBay's rules for third-party credits: ten words or fewer, no links and no web address. It's how a free tool gets found; it is plain HTML, so you can remove it if you prefer.</p></details>
-        <details class="reveal"><summary>How do I know I have the real Marteloio?</summary><p>Download it only from <a href="https://github.com/browser-b0X/marteloio">github.com/browser-b0X/marteloio</a> or this site. The code is MIT-licensed, so anyone may build on it, but the Marteloio name and logo are reserved: a modified copy has to use its own name. Treat a "Marteloio" download from anywhere else as untrusted and don't give it your keys.</p></details>
+        <details class="reveal"><summary>How do I know I have the real Marteloio?</summary><p>Download it only from <a href="https://github.com/browser-b0X/marteloio">github.com/browser-b0X/marteloio</a> or this site; the installer is published only on the repository's Releases page, with its SHA-256. The code is MIT-licensed, so anyone may build on it, but the Marteloio name and logo are reserved: a modified copy has to use its own name. Treat a "Marteloio" download from anywhere else as untrusted and don't give it your keys.</p></details>
         <details class="reveal"><summary>Can the AI get things wrong?</summary><p>Yes, which is why Marteloio never decides condition or flaws, keeps references labelled, and asks you to review before copying. Treat every draft as a draft.</p></details>
       </div>
     </div>
@@ -535,7 +683,7 @@
     <div class="feedback reveal">
       <div>
         <h2>Found a bug?<br>Have an idea?</h2>
-        <p>Reports and suggestions shape what comes next. The GitHub button in the app's header leads here too. Please use made-up examples and never attach keys or <code>.env</code> files.</p>
+        <p>Reports and suggestions shape what comes next. Help (?) › Report a problem in the app leads here too. Please use made-up examples and never attach keys or <code>.env</code> files.</p>
       </div>
       <div class="actions">
         <a class="btn btn-primary" href="https://github.com/browser-b0X/marteloio/issues/new/choose"><svg class="icon"><use href="#i-bug"/></svg>Report a bug or suggest an idea</a>
@@ -557,6 +705,8 @@
     <span>© 2026 browser-b0X · Code under the MIT license · The Marteloio name and logo are reserved</span>
     <nav aria-label="Project">
       <a href="https://github.com/browser-b0X/marteloio">GitHub</a>
+      <a href="https://github.com/browser-b0X/marteloio/blob/main/docs/GUIDE.md">User guide</a>
+      <a href="https://github.com/browser-b0X/marteloio/blob/main/CHANGELOG.md">Changelog</a>
       <a href="https://github.com/browser-b0X/marteloio/blob/main/LICENSE">License</a>
       <a href="https://github.com/browser-b0X/marteloio/blob/main/TRADEMARKS.md">Name and logo</a>
       <a href="https://github.com/browser-b0X/marteloio/blob/main/SECURITY.md">Security</a>

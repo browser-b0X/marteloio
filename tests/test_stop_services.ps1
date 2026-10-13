@@ -6,6 +6,31 @@ function Assert-Check($Value, [string]$Message) {
     if (-not $Value) { throw $Message }
     $script:checks++
 }
+# PORT is read like the launcher reads it: from the data folder, matching quotes removed.
+$temp = Join-Path ([IO.Path]::GetTempPath()) ('marteloio-stop-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Force -Path $temp | Out-Null
+$savedPort = [Environment]::GetEnvironmentVariable('PORT')
+$savedData = [Environment]::GetEnvironmentVariable('MARTELOIO_DATA_DIR')
+try {
+    [Environment]::SetEnvironmentVariable('PORT', $null)
+    [Environment]::SetEnvironmentVariable('MARTELOIO_DATA_DIR', $null)
+    [IO.File]::WriteAllText((Join-Path $temp '.env'), "# comment`nPORT=`"8181`"`n")
+    Assert-Check ((Get-ServicePorts $temp).PORT -eq 8181) 'A quoted PORT must be read like the launcher reads it'
+    $data = Join-Path $temp 'data'
+    New-Item -ItemType Directory -Force -Path $data | Out-Null
+    [IO.File]::WriteAllText((Join-Path $data '.env'), "PORT='8282'`n")
+    [Environment]::SetEnvironmentVariable('MARTELOIO_DATA_DIR', $data)
+    Assert-Check ((Get-DataDir $temp) -eq $data) 'MARTELOIO_DATA_DIR must choose the data folder'
+    Assert-Check ((Get-ServicePorts $temp).PORT -eq 8282) 'PORT must come from the data folder'
+    [Environment]::SetEnvironmentVariable('MARTELOIO_DATA_DIR', $null)
+    New-Item -ItemType File -Force -Path (Join-Path $temp 'marteloio-installed') | Out-Null
+    Assert-Check ((Get-DataDir $temp) -like '*Marteloio') 'An installed copy keeps its data in LOCALAPPDATA'
+} finally {
+    [Environment]::SetEnvironmentVariable('PORT', $savedPort)
+    [Environment]::SetEnvironmentVariable('MARTELOIO_DATA_DIR', $savedData)
+    Remove-Item -LiteralPath $temp -Recurse -Force
+}
+
 $project = 'C:\Fixtures\Marteloio'
 $relayCommand = 'python.exe "C:\Fixtures\Marteloio\server.py"'
 Assert-Check (Test-ServiceCommand $relayCommand $project) 'Absolute relay must match'

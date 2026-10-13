@@ -205,12 +205,19 @@ check('source references require provenance and omit seller fields on restore', 
 });
 
 /* ---- bundle description parser, brands ---- */
-check('bundle parser splits lines, commas, semicolons, plus and ampersand', () => {
+check('bundle parser makes one item per line, never splitting commas, semicolons, plus or ampersand', () => {
   const {parseBundleItems} = require('../listing-core.js');
   assert.deepEqual(parseBundleItems('Mario Kart 8\nZelda BOTW\r\n\n'), ['Mario Kart 8', 'Zelda BOTW']);
-  assert.deepEqual(parseBundleItems('Mario Kart 8, Zelda, Pikmin 4'), ['Mario Kart 8', 'Zelda', 'Pikmin 4']);
-  assert.deepEqual(parseBundleItems('Switch + dock & charger; HDMI cable'), ['Switch', 'dock', 'charger', 'HDMI cable']);
-  assert.deepEqual(parseBundleItems('1,000 piece puzzle, Controller (black, wired), Dock'), ['1,000 piece puzzle', 'Controller (black, wired)', 'Dock']);
+  assert.deepEqual(parseBundleItems('Mario Kart 8, Zelda, Pikmin 4'), ['Mario Kart 8, Zelda, Pikmin 4']);
+  assert.deepEqual(parseBundleItems('Switch + dock & charger; HDMI cable'), ['Switch + dock & charger; HDMI cable']);
+  assert.deepEqual(parseBundleItems('1,000 piece puzzle\nController (black, wired)\nDock'), ['1,000 piece puzzle', 'Controller (black, wired)', 'Dock']);
+  assert.deepEqual(parseBundleItems('- Canon AE-1, black\n- 50mm f/1.8 lens, with caps'), ['Canon AE-1, black', '50mm f/1.8 lens, with caps']);
+});
+check('a one-line bundle description with commas and sentences makes no items', () => {
+  const {parseBundleItems} = require('../listing-core.js');
+  assert.deepEqual(parseBundleItems('Lot of 5 Hot Wheels cars, 1990s, some paint chips. Pickup or ship.'), []);
+  assert.deepEqual(parseBundleItems('Nikon FM2 body, chrome. Shutter fires at every speed.'), []);
+  assert.deepEqual(parseBundleItems('all games tested. Mario Kart 8'), []);
 });
 check('bundle parser strips bullets and numbering', () => {
   const {parseBundleItems} = require('../listing-core.js');
@@ -220,49 +227,47 @@ check('bundle parser strips bullets and numbering', () => {
 });
 check('bundle parser keeps quantities in the name as Nx', () => {
   const {parseBundleItems} = require('../listing-core.js');
-  assert.deepEqual(parseBundleItems('2x Joy-Con, Controller x2, 3 x Game cartridge, Pro Controller (x2), 4X Cable, Strap 2x'),
+  assert.deepEqual(parseBundleItems('2x Joy-Con\nController x2\n3 x Game cartridge\nPro Controller (x2)\n4X Cable\nStrap 2x'),
     ['2x Joy-Con', '2x Controller', '3x Game cartridge', '2x Pro Controller', '4x Cable', '2x Strap']);
-  assert.deepEqual(parseBundleItems('Xbox 360, 3DS XL, 3x3 cube'), ['Xbox 360', '3DS XL', '3x3 cube']);
+  assert.deepEqual(parseBundleItems('Xbox 360\n3DS XL\n3x3 cube'), ['Xbox 360', '3DS XL', '3x3 cube']);
 });
 check('bundle parser trims filler words and headings', () => {
   const {parseBundleItems} = require('../listing-core.js');
-  assert.deepEqual(parseBundleItems('Bundle of Mario Kart, Zelda'), ['Mario Kart', 'Zelda']);
-  assert.deepEqual(parseBundleItems('Includes: dock, charger and more'), ['dock', 'charger']);
+  assert.deepEqual(parseBundleItems('Bundle of Mario Kart\nZelda'), ['Mario Kart', 'Zelda']);
+  assert.deepEqual(parseBundleItems('Includes: dock and more'), ['dock']);
   assert.deepEqual(parseBundleItems('Lot of 5 cables'), ['5 cables']);
-  assert.deepEqual(parseBundleItems('Comes with charger, Case included, plus strap, etc.'), ['charger', 'Case', 'strap']);
+  assert.deepEqual(parseBundleItems('Comes with charger\nCase included\nplus strap\netc.'), ['charger', 'Case', 'strap']);
   assert.deepEqual(parseBundleItems('Games:\nMario\nZelda'), ['Mario', 'Zelda']);
+  assert.deepEqual(parseBundleItems('Lot of 3 games: Halo 3'), ['Halo 3']);
   assert.deepEqual(parseBundleItems('The Legend of Zelda'), ['The Legend of Zelda']);
 });
-check('bundle parser skips note-like fragments instead of guessing', () => {
+check('bundle parser skips note-like lines instead of guessing', () => {
   const {parseBundleItems} = require('../listing-core.js');
-  assert.deepEqual(parseBundleItems('Everything works great, tested last week, missing the manual, Mario Kart'), ['Mario Kart']);
+  assert.deepEqual(parseBundleItems('Everything works great, tested last week, missing the manual\nMario Kart'), ['Mario Kart']);
   assert.deepEqual(parseBundleItems('This is a lovely set of things kept in a cupboard for many years'), []);
-  assert.deepEqual(parseBundleItems('Nikon FM2 body, chrome. Shutter fires at every speed.'), ['Nikon FM2 body']);
-  assert.deepEqual(parseBundleItems('No charger, Not included: box, Untested, Condition: used'), []);
+  assert.deepEqual(parseBundleItems('No charger\nNot included: box\nUntested\nCondition: used'), []);
   assert.deepEqual(parseBundleItems('Retro games lot from my childhood'), []);
 });
-check('bundle parser keeps title-case names and splits sentences and headings', () => {
+check('bundle parser keeps title-case names, abbreviations and ampersands on their line', () => {
   const {parseBundleItems} = require('../listing-core.js');
-  assert.deepEqual(parseBundleItems("No Man's Sky, Dr. Mario, Mario & Luigi"), ["No Man's Sky", 'Dr. Mario', 'Mario & Luigi']);
-  assert.deepEqual(parseBundleItems('all games tested. Mario Kart 8'), ['Mario Kart 8']);
-  assert.deepEqual(parseBundleItems('Zelda BOTW & Pro controller'), ['Zelda BOTW', 'Pro controller']);
-  assert.deepEqual(parseBundleItems('Lot of 3 games: Halo 3, Gears of War, Forza'), ['Halo 3', 'Gears of War', 'Forza']);
-  assert.deepEqual(parseBundleItems('Untested Gameboy Advance, Untested'), ['Untested Gameboy Advance']);
+  assert.deepEqual(parseBundleItems("No Man's Sky\nDr. Mario\nMario & Luigi"), ["No Man's Sky", 'Dr. Mario', 'Mario & Luigi']);
+  assert.deepEqual(parseBundleItems('Zelda BOTW & Pro controller'), ['Zelda BOTW & Pro controller']);
+  assert.deepEqual(parseBundleItems('Untested Gameboy Advance'), ['Untested Gameboy Advance']);
   assert.deepEqual(parseBundleItems('Nintendo Switch OLED console with dock and original box'), ['Nintendo Switch OLED console with dock and original box']);
 });
 check('bundle parser handles unicode, duplicates and empty input', () => {
   const {parseBundleItems} = require('../listing-core.js');
   assert.deepEqual(parseBundleItems('Pokémon Schwert • Café-Tasse • 東京タワー模型'), ['Pokémon Schwert', 'Café-Tasse', '東京タワー模型']);
   assert.deepEqual(parseBundleItems('Pokémon Schwert'), [String.fromCharCode(80, 111, 107, 101, 769, 109, 111, 110) + ' Schwert'].map(v => v.normalize('NFC')));
-  assert.deepEqual(parseBundleItems('Dock, dock, DOCK'), ['Dock']);
+  assert.deepEqual(parseBundleItems('Dock\ndock\nDOCK'), ['Dock']);
   for (const empty of ['', '   \n  ', null, undefined, 42, ['Dock'], '- \n• \n12, 34']) assert.deepEqual(parseBundleItems(empty), []);
-  assert.equal(parseBundleItems(Array.from({length: 80}, (_, i) => 'Item ' + i).join(', ')).length, 50);
+  assert.equal(parseBundleItems(Array.from({length: 80}, (_, i) => 'Item ' + i).join('\n')).length, 50);
 });
 check('bundle parser never returns a condition', () => {
   const {parseBundleItems} = require('../listing-core.js');
-  const names = parseBundleItems('Camera (used), Lens - new, Flash: for parts');
+  const names = parseBundleItems('Camera (used)\nLens - new\nFlash (for parts)');
   assert.ok(names.every(name => typeof name === 'string'));
-  assert.deepEqual(names, ['Camera (used)', 'Lens - new', 'Flash: for parts']);
+  assert.deepEqual(names, ['Camera (used)', 'Lens - new', 'Flash (for parts)']);
 });
 check('brand detection only matches whole leading words of known brands', () => {
   const {detectBrand} = require('../listing-core.js');
@@ -303,6 +308,272 @@ check('bundle condition pairing still works with the added brand field', () => {
   assert.deepEqual(data.bundle_items.map(b => b.condition), ['Used', 'For parts or not working']);
   assert.equal(normalizeListing(data).bundle_items[0].brand, 'Canon');
   assert.throws(() => normalizeListing(listing({bundle_items:[{name:'A', brand:42}]})));
+});
+
+/* ---- v0.2.0: items stay with their cards, list splitting, contact details, seller header ---- */
+check('linked bundle items keep their own card after cards are added, removed or reordered', () => {
+  const {linkBundleCards, applySellerBrands} = require('../listing-core.js');
+  const cards = [{id:'c1', name:'Camera body', condition:'USED', brand:'Canon'}, {id:'c2', name:'Battery grip', condition:'NEW', brand:'Meike'},
+    {id:'c3', name:'Charger', condition:'FOR_PARTS', brand:''}];
+  const data = linkBundleCards(normalizeListing(listing({bundle_items:[{name:'Canon body'}, {name:'BG-5D grip'}, {name:'OEM charger'}]})), cards);
+  assert.deepEqual(data.bundle_items.map(b => b.card_id), ['c1', 'c2', 'c3']);
+  applySellerCondition(data, {condition:'', notes:'', items:cards});
+  applySellerBrands(data, {brand:'', items:cards});
+  // A fourth card, a new order and an edited condition: only the edited card's item changes.
+  const later = [{id:'c4', name:'Strap', condition:'NEW', brand:'Canon'}, cards[2], {...cards[1], condition:'GUC'}, cards[0]];
+  applySellerCondition(data, {condition:'USED', notes:'Light wear', items:later});
+  applySellerBrands(data, {brand:'', items:later});
+  assert.deepEqual(data.bundle_items.map(b => b.condition), ['Used', 'Good Used Condition (GUC)', 'For parts or not working']);
+  assert.deepEqual(data.bundle_items.map(b => b.brand), ['Canon', 'Meike', '']);
+  // The camera body's card is removed: its item keeps what it had.
+  applySellerCondition(data, {condition:'USED', notes:'', items:[cards[1], cards[2]]});
+  applySellerBrands(data, {brand:'', items:[cards[1], cards[2]]});
+  assert.deepEqual(data.bundle_items.map(b => b.condition), ['Used', 'New', 'For parts or not working']);
+  assert.deepEqual(data.bundle_items.map(b => b.brand), ['Canon', 'Meike', '']);
+});
+check('an item left unpaired at generation stays unspecified when cards change later', () => {
+  const {linkBundleCards} = require('../listing-core.js');
+  const data = linkBundleCards(normalizeListing(listing({bundle_items:[{name:'Camera'}, {name:'Invented extra'}]})), [{id:'c1', name:'camera', condition:'USED'}]);
+  assert.deepEqual(data.bundle_items.map(b => b.card_id), ['c1', '']);
+  applySellerCondition(data, {condition:'', notes:'', items:[{id:'c1', name:'Camera', condition:'USED'}, {id:'c2', name:'Lens', condition:'NEW'}]});
+  assert.deepEqual(data.bundle_items.map(b => b.condition), ['Used', 'Condition not specified']);
+});
+check('card ids survive normalization, model output gains none, and linking ignores ids the model wrote', () => {
+  const {linkBundleCards} = require('../listing-core.js');
+  const linked = normalizeListing(listing({bundle_items:[{name:'A', card_id:'c9'}]}));
+  assert.equal(linked.bundle_items[0].card_id, 'c9');
+  assert.ok(!('card_id' in normalizeListing(listing({bundle_items:[{name:'A'}]})).bundle_items[0]));
+  assert.throws(() => normalizeListing(listing({bundle_items:[{name:'A', card_id:7}]})));
+  assert.deepEqual(linkBundleCards(linked, [{id:'c1', name:'A'}]).bundle_items.map(b => b.card_id), ['c1']);
+});
+check('included items split on commas, semicolons and lines, but not inside brackets or numbers', () => {
+  const {splitListItems} = require('../listing-core.js');
+  assert.deepEqual(splitListItems('Charger, lens cap; strap\nManual'), ['Charger', 'lens cap', 'strap', 'Manual']);
+  assert.deepEqual(splitListItems(' 1,000 piece puzzle , Cable (USB-C, 1m) ;; '), ['1,000 piece puzzle', 'Cable (USB-C, 1m)']);
+  assert.deepEqual(splitListItems('Box (open\nStrap'), ['Box (open', 'Strap']);
+  for (const empty of ['', ' , ; ', null, undefined]) assert.deepEqual(splitListItems(empty), []);
+});
+check('contact details are found in listing text: web addresses and emails', () => {
+  const {findContactDetail} = require('../listing-core.js');
+  for (const [text, found] of [['Visit www.example.com for more.', 'www.example.com'], ['See https://shop.example.net/item?id=1, thanks', 'https://shop.example.net/item?id=1'],
+    ['Write to me@example.com.', 'me@example.com'], ['Also at example.co.uk today', 'example.co.uk'], ['Find us on EXAMPLE.COM/store', 'EXAMPLE.COM/store'],
+    ['Camera body. Instagram: http://instagram.com/shop', 'http://instagram.com/shop']]) assert.equal(findContactDetail(text), found, text);
+  for (const text of ['Canon AE-1 Program, f/1.8 lens, 3.5mm jack', 'e.g. No. 5 of 10, v1.2.3, Dr. Mario', '99.6% positive, U.S.A. model',
+    'Firmware 2.0. Works', 'Node 9.0 board', 'Model: XC-1.5', '', null]) assert.equal(findContactDetail(text), '', String(text));
+});
+check('seller header: member year wording and validation', () => {
+  const {memberSinceText} = require('../listing-core.js');
+  assert.equal(memberSinceText('2026', 2026), 'Member since 2026');
+  assert.equal(memberSinceText(' 2025 ', 2026), 'Member for 1 year');
+  assert.equal(memberSinceText('2014', 2026), 'Member for 12 years');
+  assert.equal(memberSinceText('1995', 2026), 'Member for 31 years');
+  for (const bad of ['15', '1994', '2027', '20 14', 'abcd', '', null]) assert.equal(memberSinceText(bad, 2026), '', String(bad));
+});
+check('seller header: positive percentage strips a typed % and stays within 0 to 100', () => {
+  const {positivePercent} = require('../listing-core.js');
+  for (const [value, expected] of [['99.6%', '99.6'], [' 99.6 % ', '99.6'], ['100', '100'], ['0', '0'], ['98', '98']]) assert.equal(positivePercent(value), expected, value);
+  for (const bad of ['101', '100.5', '-1', 'abc', '99.6%%', '%', '', null]) assert.equal(positivePercent(bad), '', String(bad));
+});
+check('messages: every error kind has plain words, and the fixable ones name their fix', () => {
+  const {ERROR_MESSAGES, hasJargon, errorFix} = require('../listing-core.js');
+  const kinds = ['no_provider', 'provider_busy', 'provider_auth', 'provider_timeout', 'provider_request', 'provider_storage', 'local_busy',
+    'notes_too_long', 'ebay_not_configured', 'ebay_auth', 'ebay_unavailable', 'ebay_listing_gone', 'invalid_barcode', 'ebay_busy',
+    'ebay_storage', 'ebay_no_details', 'ebay_not_connected', 'ebay_connect_failed', 'ebay_storage_write', 'provider_storage_write',
+    'invalid_request', 'not_found', 'forbidden', 'session_expired', 'server_error', 'unknown_key', 'invalid_key', 'invalid_url', 'nothing_to_save'];
+  for (const kind of kinds) assert.ok(ERROR_MESSAGES[kind], kind);
+  for (const [kind, entry] of Object.entries(ERROR_MESSAGES)) {
+    for (const text of [entry.text, entry.note].filter(Boolean)) {
+      assert.ok(!hasJargon(text) && /^(?:[A-Z]|eBay)/.test(text) && /[.)]$/.test(text) && text.length <= 200, kind + ': ' + text);
+      assert.ok(!/\.\.\.|->|→/.test(text), 'menu paths use ›: ' + text);
+    }
+  }
+  assert.deepEqual(['no_provider', 'provider_auth', 'provider_storage'].map(errorFix), ['ai', 'ai', 'ai']);
+  assert.deepEqual(['ebay_not_configured', 'ebay_auth', 'ebay_not_connected'].map(errorFix), ['ebay', 'ebay', 'ebay']);
+  assert.deepEqual(['provider_busy', 'ebay_unavailable', 'nonsense', '', undefined].map(errorFix), ['', '', '', '', '']);
+  assert.equal(ERROR_MESSAGES.no_provider.text, 'Connect an AI service first. It takes about 2 minutes with a free Google key.');
+  assert.equal(ERROR_MESSAGES.ebay_not_configured.text, 'Look up needs an eBay key (optional). Add one in Settings › eBay, or just describe the item.');
+});
+check('messages: the server\'s plain text is preferred, technical text is replaced', () => {
+  const {plainError, isPlainMessage, errorNote} = require('../listing-core.js');
+  const busy = 'The AI services are busy right now. Your draft is safe. Try again in 30 seconds.';
+  assert.equal(plainError('provider_busy', busy), busy);
+  assert.equal(plainError('ebay_auth', ' eBay didn\'t accept your eBay keys.\n Check them. '), 'eBay didn\'t accept your eBay keys. Check them.');
+  for (const technical of ['EBAY_CLIENT_ID not set', 'Lookup failed. EBAY_CLIENT_ID not set.', 'eBay search returned HTTP 503. Please retry.',
+    'Invalid max_tokens', 'Every configured AI provider is busy.', 'Request body must be a JSON object', 'not found', 'Failed to fetch',
+    'Check the AI status and your provider keys in Settings.', 'OAuth exchange failed: token missing.', '', null, 42]) {
+    assert.ok(!isPlainMessage(technical), String(technical));
+  }
+  assert.equal(plainError('ebay_not_configured', 'EBAY_CLIENT_ID not set'),
+    'Look up needs an eBay key (optional). Add one in Settings › eBay, or just describe the item.');
+  assert.equal(plainError('', 'eBay search returned HTTP 503. Please retry.', 'ebay_unavailable'),
+    'eBay couldn\'t be reached. Try again in a minute, or just describe the item.');
+  assert.equal(plainError('mystery', undefined), 'Marteloio couldn\'t finish this. Try again in a minute.');
+  assert.equal(errorNote('no_provider', 'anything'), 'Couldn\'t write the listing: no AI service is connected yet.');
+  assert.equal(errorNote('ebay_listing_gone', 'This listing is no longer on eBay. Pick another one.', 'Look up didn\'t work'),
+    'Look up didn\'t work. This listing is no longer on eBay. Pick another one.');
+});
+check('AI keys: pasted keys are recognised by their start, without quotes or Bearer', () => {
+  const {recognizeKey, cleanPastedKey} = require('../listing-core.js');
+  const cases = [[' AIzaSyFixtureGeminiKey0123456789abcd ', 'gemini', 'Google Gemini', 'key'], ['"Bearer gsk_fixtureGroqKey0123"', 'groq', 'Groq', 'key'],
+    ['bearer sk-or-v1-0123456789abcdef\n', 'openrouter', 'OpenRouter', 'key'], ['“freellmapi-0a1b2c3d0a1b2c3d”', 'freellmapi', 'FreeLLMAPI', 'key'],
+    ['sk-cp-fixtureProfileKey0123', 'freellmapi', 'FreeLLMAPI', 'key'],
+    ['http://127.0.0.1:31415/v1/t/flmurl_fixtureToken0123', 'freellmapi', 'FreeLLMAPI', 'address']];
+  for (const [text, id, label, kind] of cases) assert.deepEqual(recognizeKey(text), {id, label, kind}, text);
+  for (const text of ['hello', 'sk-proj-openai-style-key', 'http://127.0.0.1:31415/v1', 'aiza-lowercase', '', null]) assert.equal(recognizeKey(text), null, String(text));
+  assert.equal(cleanPastedKey(" 'Bearer  AIzaX' "), 'AIzaX');
+  assert.equal(cleanPastedKey('Bearer "gsk_x"'), 'gsk_x');
+});
+check('messages: how long each kind stays, from one table', () => {
+  const {toastLife, TOAST_TIMES} = require('../listing-core.js');
+  assert.deepEqual([TOAST_TIMES.busyDelay, TOAST_TIMES.busyElapsed, TOAST_TIMES.ok, TOAST_TIMES.okAction, TOAST_TIMES.note, TOAST_TIMES.err, TOAST_TIMES.errMax],
+    [400, 10000, 4000, 10000, 8000, 10000, 20000]);
+  assert.equal(toastLife('ok', 'Listing ready.', false), 4000);
+  assert.equal(toastLife('ok', 'Saved your edited version in Recent drafts.', true), 10000);
+  assert.equal(toastLife('note', 'x'.repeat(500), true), 8000);
+  assert.equal(toastLife('err', 'Short problem.', false), 10000);
+  const long = toastLife('err', 'x'.repeat(220), false);
+  assert.ok(long > 10000 && long < 20000, String(long));
+  assert.equal(toastLife('err', 'x'.repeat(5000), false), 20000);
+  assert.equal(toastLife('busy', 'Writing your listing…', false), 0);
+  assert.equal(toastLife('ok', 'x', false, {...TOAST_TIMES, ok: 50}), 50);
+});
+check('first run: the guide record keeps only known values', () => {
+  const {normalizeGuide, GUIDE_DEFAULTS} = require('../listing-core.js');
+  const blank = {welcome: '', tour: '', generated: false, copied: false, checklist: 'auto', startHereDismissed: false, tipsShown: [], tourNotice: false};
+  for (const value of [null, undefined, 'done', 42, [], {welcome: 'yes', tour: 1, generated: 'true', checklist: 'gone', tipsShown: 'copyHtml'}]) {
+    assert.deepEqual(normalizeGuide(value), blank, JSON.stringify(value));
+  }
+  assert.deepEqual({...GUIDE_DEFAULTS, tipsShown: []}, blank);
+  const full = {welcome: 'skipped', tour: 'done', generated: true, copied: true, checklist: 'shown', startHereDismissed: true,
+    tipsShown: ['copyHtml', 'copyHtml', '<script>', 7, 'x'.repeat(31)], tourNotice: true, extra: 'dropped'};
+  assert.deepEqual(normalizeGuide(full), {welcome: 'skipped', tour: 'done', generated: true, copied: true, checklist: 'shown',
+    startHereDismissed: true, tipsShown: ['copyHtml'], tourNotice: true});
+});
+check('first run: the first AI status decides welcome, tour notice and checklist', () => {
+  const {firstRunPlan, aiConnected} = require('../listing-core.js');
+  const none = {ready: false, retry_in: 0, providers: [{id: 'gemini', configured: false, state: 'off'}, {id: 'groq', configured: false, state: 'off'}]};
+  const resting = {ready: false, retry_in: 40, providers: [{id: 'gemini', configured: true, state: 'rate_limited'}]};
+  const unreadable = {ready: false, retry_in: 0, providers: [], error: 'Marteloio couldn\'t read your saved keys.', kind: 'provider_storage'};
+  assert.deepEqual([none, resting, unreadable, null, {}].map(aiConnected), [false, true, false, false, false]);
+  assert.deepEqual(firstRunPlan({}, none, false), {welcome: true, notice: false, patch: {}});
+  assert.deepEqual(firstRunPlan({}, unreadable, true), {welcome: true, notice: false, patch: {}});
+  for (const welcome of ['done', 'skipped']) assert.deepEqual(firstRunPlan({welcome}, none, false), {welcome: false, notice: false, patch: {}});
+  assert.deepEqual(firstRunPlan({}, resting, false), {welcome: false, notice: true, patch: {welcome: 'skipped', tourNotice: true}});
+  assert.deepEqual(firstRunPlan({}, resting, true), {welcome: false, notice: true, patch: {welcome: 'skipped', tourNotice: true, checklist: 'hidden'}});
+  assert.deepEqual(firstRunPlan({tour: 'skipped'}, resting, true), {welcome: false, notice: false, patch: {welcome: 'skipped', checklist: 'hidden'}});
+  assert.deepEqual(firstRunPlan({tourNotice: true, checklist: 'shown'}, resting, true), {welcome: false, notice: false, patch: {welcome: 'skipped'}});
+});
+check('first run: which form of the Get set up guide shows, and its steps', () => {
+  const {guideMode, setupSteps} = require('../listing-core.js');
+  assert.deepEqual([[{}, false], [{}, true], [{copied: true}, false], [{checklist: 'hidden'}, false], [{checklist: 'shown', copied: true}, true]]
+    .map(([guide, listing]) => guideMode(guide, listing, false)), ['full', 'strip', 'none', 'none', 'full']);
+  assert.equal(guideMode({checklist: 'shown'}, false, true), 'none');
+  assert.deepEqual(setupSteps({}), {done: [false, false, false, false], now: 0});
+  assert.deepEqual(setupSteps({connected: true, described: true}), {done: [true, true, false, false], now: 2});
+  assert.deepEqual(setupSteps({connected: false, generated: true}), {done: [false, true, true, false], now: 0});
+  assert.deepEqual(setupSteps({connected: true, copied: true}), {done: [true, true, true, true], now: -1});
+});
+check('first run: the header AI button says Set up AI, AI ready or AI busy with the time', () => {
+  const {aiPill} = require('../listing-core.js');
+  const p = (configured, state, extra) => ({id: 'gemini', label: 'Google Gemini', configured, state, ...extra});
+  assert.deepEqual(aiPill({ready: true, retry_in: 0, providers: [p(true, 'ready')]}), {tone: 'ready', text: 'AI ready', setup: false});
+  assert.deepEqual(aiPill({ready: false, retry_in: 0, providers: [p(false, 'off')]}), {tone: 'setup', text: 'Set up AI', setup: true});
+  assert.deepEqual(aiPill({ready: false, retry_in: 0, providers: [], kind: 'provider_storage', error: 'x'}), {tone: 'setup', text: 'Set up AI', setup: true});
+  assert.deepEqual(aiPill({ready: false, retry_in: 40, providers: [p(true, 'rate_limited', {retry_in: 40})]}), {tone: 'busy', text: 'AI busy · 40 s', setup: false});
+  assert.deepEqual(aiPill({ready: false, retry_in: 0, providers: [p(true, 'unavailable')]}), {tone: 'off', text: 'AI offline', setup: false});
+  assert.deepEqual(aiPill(null), {tone: 'off', text: 'AI offline', setup: false});
+});
+check('first run: a tip, tooltip or tour card is never cut off (flip and shift)', () => {
+  const {placeFloating} = require('../listing-core.js');
+  const view = {width: 1366, height: 768}, size = {width: 300, height: 120};
+  const rect = (left, top, width, height) => ({left, top, right: left + width, bottom: top + height});
+  assert.deepEqual(placeFloating(rect(600, 100, 40, 20), size, view), {side: 'below', left: 470, top: 130, arrow: 150});
+  // Too close to the bottom: it flips above.
+  const flipped = placeFloating(rect(600, 700, 40, 20), size, view);
+  assert.equal(flipped.side, 'above'); assert.equal(flipped.top, 700 - 10 - 120);
+  // Near the left edge: it shifts inside, and the arrow still points at the anchor.
+  const shifted = placeFloating(rect(4, 100, 20, 20), size, view);
+  assert.equal(shifted.left, 8); assert.equal(shifted.arrow, 16);
+  const right = placeFloating(rect(1340, 100, 20, 20), size, view);
+  assert.equal(right.left, 1366 - 8 - 300); assert.equal(right.arrow, 300 - 16);
+  // A phone: full width boxes stay inside, and a tall anchor puts the box beside or over it.
+  const phone = placeFloating(rect(20, 300, 30, 20), {width: 366, height: 140}, {width: 390, height: 844}, {margin: 12});
+  assert.ok(phone.left === 12 && phone.top >= 12 && phone.top + 140 <= 844 - 12, JSON.stringify(phone));
+  const beside = placeFloating(rect(800, 40, 500, 700), {width: 360, height: 180}, view, {order: ['below', 'above', 'left', 'right']});
+  assert.equal(beside.side, 'left'); assert.ok(beside.left + 360 <= 800 - 10 && beside.top >= 8 && beside.top + 180 <= 760);
+  // No side has room: the roomiest side, still inside the viewport.
+  const cramped = placeFloating(rect(0, 0, 390, 844), {width: 366, height: 200}, {width: 390, height: 844}, {margin: 12});
+  assert.ok(cramped.left >= 12 && cramped.top >= 12 && cramped.top + 200 <= 832, JSON.stringify(cramped));
+  // align start: the arrow sits near the box's start, pointing at the anchor.
+  const start = placeFloating(rect(180, 400, 18, 18), size, view, {align: 'start'});
+  assert.ok(start.left < 180 && start.arrow === 189 - start.left && start.arrow <= 30, JSON.stringify(start));
+});
+check('first run: the approved tip and tour texts, in plain words', () => {
+  const {GUIDE_TIPS, TOUR_STOPS, hasJargon} = require('../listing-core.js');
+  assert.deepEqual(Object.keys(GUIDE_TIPS), ['startHere', 'product', 'lookup', 'keywords', 'describe', 'included', 'condition', 'conditionNotes', 'brand',
+    'bundle', 'newListing', 'generate', 'copyHtml', 'regenerate', 'editContent', 'shuffle', 'drafts', 'aiStatus']);
+  assert.equal(GUIDE_TIPS.lookup.text, 'Optional. Finds other sellers\' eBay listings for this product so you can borrow their specs. Needs a free eBay developer key (Settings › eBay). You can skip it.');
+  assert.equal(GUIDE_TIPS.copyHtml.text, 'In eBay\'s listing form, switch the description box to HTML (the < > button), paste, then check the preview.');
+  assert.equal(GUIDE_TIPS.generate.text, 'Writes the title and description from your notes, usually in 10–30 seconds.');
+  assert.deepEqual(TOUR_STOPS.map(stop => stop.title), ['Start here', 'Describe the item', 'Condition', 'Generate listing', 'Review', 'Copy into eBay']);
+  for (const entry of [...Object.values(GUIDE_TIPS), ...TOUR_STOPS]) {
+    // "HTML" and "eBay" are what the seller sees on screen; "developer key" names eBay's own page.
+    assert.ok(!hasJargon(entry.text.replace(/HTML/g, '')) && /^[A-Z]/.test(entry.text) && /[.)]$/.test(entry.text) && entry.text.length <= 200, entry.text);
+  }
+});
+/* ---- v0.2.0 QA walkthrough fixes ---- */
+const service = extra => ({id: 'gemini', label: 'Google Gemini', configured: true, enabled: true, state: 'ready', retry_in: 0, key_hint: 'a1B2',
+  checked: '', model: 'gemini-flash-latest', ...extra});
+check('QA: connected means set up, switched on, not turned down and its last check not failed', () => {
+  const {serviceConnected, aiConnected, firstRunPlan} = require('../listing-core.js');
+  assert.deepEqual([service(), service({checked: 'ok'}), service({state: 'rate_limited', retry_in: 30}), service({checked: 'failed'}),
+    service({state: 'key_rejected'}), service({enabled: false, state: 'disabled'}), service({configured: false, state: 'off'}), null].map(serviceConnected),
+    [true, true, true, false, false, false, false, false]);
+  assert.equal(aiConnected({ready: true, retry_in: 0, providers: [service({checked: 'failed'})]}), false);
+  assert.equal(aiConnected({ready: true, retry_in: 0, providers: [service({checked: 'failed'}), service({id: 'freellmapi', checked: 'ok'})]}), true);
+  // A key that failed its check doesn't count as set up: the welcome still opens.
+  assert.deepEqual(firstRunPlan({}, {ready: true, retry_in: 0, providers: [service({checked: 'failed'})]}, false), {welcome: true, notice: false, patch: {}});
+});
+check('QA: the AI button says AI ready only for a connected service, AI busy for a rate limit, AI offline with the time otherwise', () => {
+  const {aiPill} = require('../listing-core.js');
+  const setup = {tone: 'setup', text: 'Set up AI', setup: true};
+  assert.deepEqual(aiPill({ready: true, retry_in: 0, providers: [service({checked: 'failed'})]}), setup);
+  assert.deepEqual(aiPill({ready: false, retry_in: 0, providers: [service({enabled: false, state: 'disabled'})]}), setup);
+  assert.deepEqual(aiPill({ready: false, retry_in: 30, providers: [service({state: 'unavailable', retry_in: 30})]}), {tone: 'off', text: 'AI offline · 30 s', setup: false});
+  assert.deepEqual(aiPill({ready: false, retry_in: 12, providers: [service({state: 'timeout', retry_in: 12})]}), {tone: 'off', text: 'AI offline · 12 s', setup: false});
+  assert.deepEqual(aiPill({ready: false, retry_in: 30, providers: [service({state: 'rate_limited', retry_in: 30})]}), {tone: 'busy', text: 'AI busy · 30 s', setup: false});
+  // The service back soonest decides the words; a failing one that is "ready" doesn't make it AI ready.
+  assert.deepEqual(aiPill({ready: false, retry_in: 20, providers: [service({state: 'unavailable', retry_in: 45}), service({id: 'groq', state: 'rate_limited', retry_in: 20})]}),
+    {tone: 'busy', text: 'AI busy · 20 s', setup: false});
+  assert.deepEqual(aiPill({ready: true, retry_in: 0, providers: [service({checked: 'failed'}), service({id: 'freellmapi', state: 'unavailable', retry_in: 40, checked: 'ok'})]}),
+    {tone: 'off', text: 'AI offline · 40 s', setup: false});
+});
+check('QA: each AI service in plain words, as its Settings chip says it, never its model', () => {
+  const {aiServiceState} = require('../listing-core.js');
+  assert.deepEqual([service(), service({checked: 'failed'}), service({state: 'key_rejected', checked: 'failed'}), service({enabled: false, state: 'disabled'}),
+    service({configured: false, state: 'off'}), service({state: 'rate_limited', retry_in: 40}), service({state: 'unavailable', retry_in: 30, checked: 'failed'})]
+    .map(entry => aiServiceState(entry).text), ['Ready', 'Test failed', 'Key rejected', 'Off', 'Not set up', 'Resting 40 s', 'Resting 30 s']);
+});
+check('QA: messages for FreeLLMAPI not running, FreeLLMAPI without services, and every service switched off', () => {
+  const {ERROR_MESSAGES, errorFix, plainError, hasJargon} = require('../listing-core.js');
+  assert.equal(ERROR_MESSAGES.freellmapi_not_running.text, 'FreeLLMAPI isn\'t running on this computer. Start it, then try again.');
+  assert.equal(ERROR_MESSAGES.freellmapi_no_services.text, 'FreeLLMAPI is running but has no AI services yet. Add a key on its Keys page, then try again.');
+  assert.equal(ERROR_MESSAGES.all_disabled.text, 'Every AI service is switched off. Turn one on in Settings › AI.');
+  assert.deepEqual(['all_disabled', 'freellmapi_not_running', 'freellmapi_no_services'].map(errorFix), ['aiSettings', '', '']);
+  assert.equal(plainError('all_disabled', 'ALL_DISABLED'), ERROR_MESSAGES.all_disabled.text);
+  for (const kind of ['all_disabled', 'freellmapi_not_running', 'freellmapi_no_services']) assert.ok(!hasJargon(ERROR_MESSAGES[kind].text), kind);
+});
+check('QA: a step note says what its message said, without "Your draft is safe." or a countdown', () => {
+  const {errorNote} = require('../listing-core.js');
+  const what = 'Couldn\'t write the listing';
+  assert.equal(errorNote('provider_busy', 'The AI services couldn\'t be reached. Your draft is safe. Check your internet connection and try again in 30 seconds.', what),
+    'Couldn\'t write the listing. The AI services couldn\'t be reached. Check your internet connection and try again in a moment.');
+  assert.equal(errorNote('provider_busy', 'The AI services are busy right now. Your draft is safe. Try again in 1 second.', what),
+    'Couldn\'t write the listing. The AI services are busy right now. Try again in a moment.');
+  assert.equal(errorNote('freellmapi_no_services', 'FreeLLMAPI is running but has no AI services yet. Add a key on its Keys page, then try again.', what),
+    'Couldn\'t write the listing. FreeLLMAPI is running but has no AI services yet. Add a key on its Keys page, then try again.');
+  // A kind's own text keeps its short note.
+  assert.equal(errorNote('provider_auth', 'Your AI key was turned down. Open Settings › AI and paste a new key.', what), 'Couldn\'t write the listing: your AI key was turned down.');
 });
 
 console.log(passed + ' validation checks passed');

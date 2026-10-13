@@ -1,4 +1,7 @@
 """Provider persistence against temporary paths, with real-file hash guards."""
+import contextlib
+import io
+import os
 from pathlib import Path
 import sys
 import unittest
@@ -33,16 +36,25 @@ class EncryptedProviderTests(IsolatedCredentialPaths):
         self.assertEqual(store['provider_keys'], {'GROQ_API_KEY': 'provider-fixture'})
         self.assertEqual(store['ebay_client_id'], 'client-fixture')
 
-    def test_malformed_encrypted_store_is_preserved_and_blocks_ebay_writes(self):
+    def kept(self):
+        """Contents of the stores set aside as unreadable."""
+        return sorted(Path(self.base, name).read_text() for name in os.listdir(self.base) if '.unreadable-' in name)
+
+    def test_malformed_encrypted_store_is_kept_aside_when_ebay_keys_are_saved(self):
         import json
         from base64 import b64encode
-        for value in ([], {'ebay_client_id': []}, {'token': 'invalid-fixture'}):
+        blobs = []
+        for value in ([], {'ebay_client_id': []}, {'token': 'invalid-fixture'},
+                      {'provider_keys': {'GROQ_API_KEY': ['not-text']}}):
             blob = b64encode(server.dpapi_encrypt(json.dumps(value).encode())).decode('ascii')
+            blobs.append(blob)
             Path(self.secrets_path).write_text(blob)
             with self.assertRaises(OSError):
                 server.load_secrets()
-            self.assertFalse(server.set_ebay_creds('replacement-fixture'))
-            self.assertEqual(Path(self.secrets_path).read_text(), blob)
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertTrue(server.set_ebay_creds('replacement-fixture'))
+            self.assertEqual(server.load_secrets(), {'ebay_client_id': 'replacement-fixture'})
+        self.assertEqual(self.kept(), sorted(blobs))
 
     def test_save_preserves_other_secrets_and_strips_only_saved_plaintext(self):
         self.assertTrue(server.save_secrets({'ebay_client_id': 'ebay-fixture', 'token': {'refresh_token': 'token-fixture'}}))
@@ -64,11 +76,21 @@ class EncryptedProviderTests(IsolatedCredentialPaths):
                 server.save_provider_settings({'GROQ_API_KEY': 'replacement-fixture'})
         self.assertTrue(server.read_env()['GROQ_API_KEY'] == 'keep-fixture')
 
-    def test_unreadable_store_is_not_overwritten(self):
+    def test_unreadable_store_is_kept_and_the_new_key_saved(self):
         Path(self.secrets_path).write_text('unreadable-fixture')
-        with self.assertRaises(OSError):
+        with contextlib.redirect_stderr(io.StringIO()) as log:
             server.save_provider_settings({'GROQ_API_KEY': 'replacement-fixture'})
+        self.assertEqual(server.load_secrets()['provider_keys'], {'GROQ_API_KEY': 'replacement-fixture'})
+        self.assertEqual(self.kept(), ['unreadable-fixture'])
+        self.assertNotIn('replacement-fixture', log.getvalue())
+
+    def test_unreadable_store_stays_put_when_the_new_one_cannot_be_written(self):
+        Path(self.secrets_path).write_text('unreadable-fixture')
+        with patch.object(server, 'dpapi_encrypt', side_effect=OSError('fixture')):
+            with self.assertRaises(OSError):
+                server.save_provider_settings({'GROQ_API_KEY': 'replacement-fixture'})
         self.assertEqual(Path(self.secrets_path).read_text(), 'unreadable-fixture')
+        self.assertEqual(self.kept(), [])
 
     def test_plaintext_cleanup_failure_is_reported_after_verified_save(self):
         Path(self.env_path).write_text('GROQ_API_KEY=old-fixture\n')

@@ -4,9 +4,9 @@ setlocal
 cd /d "%~dp0"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0stop-services.ps1"
 if errorlevel 1 (
-  echo Relaunch cancelled. Resolve the reported conflict before trying again.
+  echo Marteloio was not restarted. See the message above.
   exit /b 1
 )
-echo Relaunching...
+echo Starting Marteloio again...
 call "%~dp0start-all.bat"
 exit /b %ERRORLEVEL%

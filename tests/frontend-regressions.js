@@ -5,17 +5,37 @@
   const pending = [];
   let holdSession = false;
   let holdSettings = false;
-  let aiStatus = {ready: true, retry_in: 0, providers: [{id: "groq", label: "Groq", configured: true, state: "ready", retry_in: 0, model: "fixture-model"}]};
+  /* The server's shapes (v0.2.0). /ai/status: {ready, retry_in, providers: [{id, label, configured, enabled, state, retry_in,
+     model, key_hint, checked: "ok" | "failed" | "" (its last test or use; "" after a restart or a new key), base_url (FreeLLMAPI)}]}.
+     POST /settings/ai: {saved, provider, label, test, status}; a pasted key the service turns down (test.kind "key_rejected")
+     isn't saved: saved false, the previous key kept, status as before. Saving a key switches its service on. Generation
+     errors: {error, kind}, kinds including freellmapi_not_running, freellmapi_no_services and all_disabled (503). */
+  let aiStatus = {ready: true, retry_in: 0, providers: [{id: "groq", label: "Groq", configured: true, enabled: true, state: "ready", retry_in: 0, model: "fixture-model",
+    key_hint: "WXYZ", checked: ""}]};
+  // v0.2.0 routes. GETs answer at once (or are held once when asked); POSTs wait for the checks.
+  let fixtureAppInfo = {version: "0.2.0", build: "0123456789ab", installed: true, data_dir: "C:\\Users\\Fixture\\AppData\\Local\\Marteloio", os: "windows", port: 8080};
+  let detectReply = {found: false, ready: false, base_url: "", reason: "not_running"};
+  let holdDetect = false, holdStatus = false;
+  let settingsReply = {};
   const reply = data => ({ok: true, status: 200, json: async () => data});
   window.fetch = async (path, opts = {}) => {
     if (path === "/session") {
       if (holdSession) { holdSession = false; return new Promise(resolve => pending.push({path, opts, resolve})); }
       return reply({token: "fixture-only"});
     }
-    if (path === "/ai/status") return reply(aiStatus);
+    if (path === "/ai/status") {
+      if (holdStatus) { holdStatus = false; return new Promise(resolve => pending.push({path, opts, resolve})); }
+      return reply(aiStatus);
+    }
+    if (path === "/app/info") return reply(fixtureAppInfo);
+    if (path === "/ai/freellmapi/detect") {
+      if (holdDetect) { holdDetect = false; return new Promise(resolve => pending.push({path, opts, resolve})); }
+      return reply(detectReply);
+    }
+    if (["/settings/ai", "/ai/test", "/shutdown"].includes(path) && opts.method === "POST") return new Promise(resolve => pending.push({path, opts, resolve}));
     if (path === "/settings" && opts.method !== "POST") {
       if (holdSettings) { holdSettings = false; return new Promise(resolve => pending.push({path, opts, resolve})); }
-      return reply({});
+      return reply(settingsReply);
     }
     if ((path === "/settings" || path === "/settings/ebay") && opts.method === "POST") return new Promise(resolve => pending.push({path, opts, resolve}));
     if (path.startsWith('/ebay/authorize-url?') || path === '/ebay/token-user' || path === '/ebay/userstats') return new Promise(resolve => pending.push({path, opts, resolve}));
@@ -24,15 +44,48 @@
     }
     throw new Error("Fixture blocked unexpected request: " + path);
   };
+  /* ?app-only: a bare copy of the app for the first-run checks (wave3Checks loads it in a frame).
+     Its storage lives in memory, so the page running the checks keeps its own, and the query says
+     what it starts from: ai=none (nothing set up), guide=<the first-run record as JSON>,
+     drafts=<how many Recent drafts>, storage=throws (every storage call throws). No checks run here;
+     window.__fixture lets the checks answer its requests and read its page errors. */
+  const appParams = new URLSearchParams(location.search);
+  if (appParams.has("app-only")) {
+    const memory = new Map(), throws = appParams.get("storage") === "throws";
+    const deny = () => { throw new DOMException("Fixture blocked storage", "SecurityError"); };
+    Storage.prototype.getItem = function(key) { if (throws) deny(); return memory.has(String(key)) ? memory.get(String(key)) : null; };
+    Storage.prototype.setItem = function(key, value) { if (throws) deny(); memory.set(String(key), String(value)); };
+    Storage.prototype.removeItem = function(key) { if (throws) deny(); memory.delete(String(key)); };
+    Storage.prototype.clear = function() { if (throws) deny(); memory.clear(); };
+    memory.set("eb.appTheme", appParams.get("theme") === "dark" ? "dark" : "light");
+    if (appParams.has("guide")) memory.set("marteloio.guide.v1", appParams.get("guide"));
+    const drafts = Number(appParams.get("drafts") || 0);
+    if (drafts > 0) memory.set("eb.history.v1", JSON.stringify(Array.from({length: drafts}, (_, i) => ({id: "fixture-" + i, savedAt: new Date().toISOString(),
+      title: "Fixture draft " + (i + 1), draft: {version: 1, inputs: {notes: "Fixture draft " + (i + 1)}}}))));
+    if (appParams.get("ai") === "none") {
+      const off = (id, label) => ({id, label, configured: false, enabled: true, state: "off", retry_in: 0, key_hint: "", checked: ""});
+      aiStatus = {ready: false, retry_in: 0, providers: [off("freellmapi", "FreeLLMAPI"), off("gemini", "Google Gemini"), off("groq", "Groq"), off("openrouter", "OpenRouter")]};
+    }
+    const errors = [];
+    window.addEventListener("error", event => errors.push(String(event.message)));
+    window.addEventListener("unhandledrejection", event => errors.push(String(event.reason)));
+    window.__fixture = {pending, reply, errors, memory, setStatus: status => { aiStatus = status; }};
+    window.confirm = () => true;
+    return;
+  }
   // This is an ephemeral test origin, never the user's app origin.
   const barcodeReload = new URLSearchParams(location.search).has("barcode-reload");
   const barcodeReloadStage = barcodeReload ? sessionStorage.getItem("fixture.barcodeReload") : null;
   const themeReload = new URLSearchParams(location.search).has("theme-reload");
   const themeReloadStage = themeReload ? sessionStorage.getItem("fixture.themeReload") : null;
+  // A seller who finished the first run: nothing from the guide pops up during the older checks.
+  // The first-run checks (wave3Checks) reset it, and load fresh copies of the app with ?app-only.
+  const GUIDE_DONE = {welcome: "done", tour: "done", generated: true, copied: true, checklist: "auto", startHereDismissed: true, tipsShown: ["copyHtml"], tourNotice: true};
   if (!barcodeReloadStage && !themeReloadStage) {
     localStorage.clear();
     localStorage.setItem("eb.appTheme", "dark");
     localStorage.setItem("eb.draft.v1", JSON.stringify({version: 1, inputs: {notes: "Restored fixture draft"}}));
+    localStorage.setItem("marteloio.guide.v1", JSON.stringify(GUIDE_DONE));
   }
   const blockedStorageBoot = new URLSearchParams(location.search).has("storage-blocked");
   if (blockedStorageBoot) {
@@ -65,6 +118,2191 @@
     function setupBundle(names) {
       applyDraft({inputs: {}, mode: "bundle", bundleItems: names.map(name => ({name, notes: "Original " + name}))});
       renderDraft();
+    }
+    /* ---- v0.2.0 wave 2: messages that fade, plain errors with fixes, step notes, Settings ----
+       Runs at the end of the suite, or alone with ?wave2. With ?soft it records failures instead
+       of stopping, so it can be run against the code before this wave (each check must fail there). */
+    async function wave2Checks() {
+      const soft = new URLSearchParams(location.search).has("soft");
+      const softFailures = [];
+      const lc = (fn, label) => {
+        let ok = false;
+        try { ok = Boolean(fn()); } catch (_) { ok = false; }
+        if (ok || !soft) check(ok, label); else softFailures.push(label);
+      };
+      const act = async fn => { try { await fn(); } catch (_) { /* the outcome is checked next */ } };
+      const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+      const until = async (fn, ms = 2500) => {
+        const end = performance.now() + ms;
+        for (;;) {
+          let ok = false;
+          try { ok = Boolean(fn()); } catch (_) { ok = false; }
+          if (ok) return true;
+          if (performance.now() > end) return false;
+          await wait(10);
+        }
+      };
+      const settleUi = async () => { for (let i = 0; i < 8; i++) await tick(); };
+      const typeInto = (el, value) => { el.value = value; el.dispatchEvent(new Event("input", {bubbles: true})); };
+      const failWith = (request, status, data) => request.resolve({ok: false, status, json: async () => data});
+      const live = () => [...document.querySelectorAll("#toastPanel .toast-item:not(.leaving)")];
+      const liveOf = kind => live().filter(item => item.querySelector(".toast." + kind));
+      const textOf = item => (item && item.querySelector(".toast p") || {}).textContent || "";
+      const titleOf = item => (item && item.querySelector(".toast-title > span") || {}).textContent || "";
+      const actionOf = item => item && item.querySelector(".toast-action");
+      const takeRequest = async path => {
+        await until(() => pending.some(request => request.path === path));
+        const at = pending.findIndex(request => request.path === path);
+        return at < 0 ? null : pending.splice(at, 1)[0];
+      };
+      const clearToasts = () => {
+        try { if (busyToast) dismissToast(busyToast); } catch (_) { /* older code */ }
+        for (const item of [...document.querySelectorAll("#toastPanel .toast-item")]) {
+          try { dismissToast(item); } catch (_) { /* older code */ }
+          item.remove();
+        }
+      };
+      const lum = color => {
+        const [r, g, b] = color.match(/[\d.]+/g).slice(0, 3).map(Number).map(v => { v /= 255; return v <= .03928 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; });
+        return .2126 * r + .7152 * g + .0722 * b;
+      };
+      const contrastOf = (fg, bg) => { const a = lum(fg), b = lum(bg); return (Math.max(a, b) + .05) / (Math.min(a, b) + .05); };
+      const provider = (id, label, extra = {}) => ({id, label, configured: false, enabled: true, state: "off", retry_in: 0, key_hint: "", checked: "",
+        ...(id === "freellmapi" ? {base_url: "http://127.0.0.1:31415/v1"} : {}), ...extra});
+      const noneSetUp = {ready: false, retry_in: 0, providers: [provider("freellmapi", "FreeLLMAPI"), provider("gemini", "Google Gemini"), provider("groq", "Groq"), provider("openrouter", "OpenRouter")]};
+      const twoSetUp = {ready: true, retry_in: 0, providers: [provider("freellmapi", "FreeLLMAPI", {configured: true, state: "ready", key_hint: "9f3c", checked: "ok"}),
+        provider("gemini", "Google Gemini", {configured: true, state: "ready", key_hint: "a1B2", checked: "ok"}), provider("groq", "Groq"), provider("openrouter", "OpenRouter")]};
+      const NO_AI = "Connect an AI service first. It takes about 2 minutes with a free Google key.";
+      const NO_EBAY = "Look up needs an eBay key (optional). Add one in Settings \u203a eBay, or just describe the item.";
+      const FAST = {busyDelay: 80, busyElapsed: 320, tick: 60, ok: 450, okAction: 700, note: 500, err: 600, errMax: 1000, readFrom: 120, perChar: 2, sayGap: 60};
+      let defaultTimes = null;
+      try { defaultTimes = {...TOAST_TIMES}; } catch (_) { /* older code */ }
+      const fast = () => { try { Object.assign(TOAST_TIMES, FAST); } catch (_) { /* older code */ } };
+      const savedStatus = aiStatus, savedDetect = detectReply, savedInfo = fixtureAppInfo, savedTheme = document.documentElement.dataset.theme;
+      const fixtureConfirm = window.confirm;
+      let confirms = 0;
+      window.confirm = () => { confirms++; return true; };
+      pending.splice(0);
+      try {
+        await act(() => { closeSettings(); newListing(); });
+        clearToasts();
+
+        /* -- how long each message stays: one table (listing-core TOAST_TIMES) -- */
+        let lives = null;
+        await act(() => {
+          const life = (kind, text, action) => toastInfo(toast(kind, text, action ? {action: {label: "Undo", run() {}}} : {})).life;
+          lives = [life("ok", "Fixture done."), life("ok", "Fixture done with undo.", true), life("note", "Fixture notice."), life("err", "Fixture problem."),
+            life("err", "Fixture problem with a long explanation to read. ".repeat(5)), life("err", "x".repeat(4000))];
+        });
+        lc(() => lives[0] === 4000 && lives[1] === 10000 && lives[2] === 8000 && lives[3] === 10000 && lives[4] > 10000 && lives[4] < 20000 && lives[5] === 20000,
+          "Messages: Done stays 4 s (10 s with Undo), Notice 8 s, Problem 10 s plus reading time, at most 20 s");
+        clearToasts();
+        fast();
+
+        /* -- Working -- */
+        let early = null, later = null, quick = null;
+        await act(async () => {
+          const item = toast("busy", "Fixture working\u2026", {task: "fixture-task"});
+          early = item.isConnected;
+          await wait(FAST.busyDelay + 140);
+          later = item.parentElement === $("toastPanel");
+          dismissToast(item);
+          const brief = toast("busy", "Quick fixture task\u2026");
+          dismissToast(brief);
+          await wait(FAST.busyDelay + 140);
+          quick = brief.isConnected;
+        });
+        lc(() => early === false && later === true && quick === false && ListingCore.TOAST_TIMES.busyDelay === 400,
+          "Messages: Working appears only if the task is still running after 0.4 s");
+        let shownWhileWriting = false, waited = "", goneWhenReady = false, goneOnStop = false;
+        await act(async () => {
+          newListing(); typeInto($("notes"), "Working fixture camera");
+          const run = generate(); const request = await nextRequest();
+          await wait(FAST.busyDelay + 140);
+          shownWhileWriting = Boolean(busyToast && busyToast.isConnected && textOf(busyToast) === "Writing your listing\u2026");
+          await wait(FAST.busyElapsed + FAST.tick + 140);
+          waited = textOf(busyToast);
+          const item = busyToast;
+          complete(request, listing("Working fixture title")); await run;
+          goneWhenReady = !busyToast && (item.classList.contains("leaving") || !item.isConnected);
+          typeInto($("notes"), "Working fixture stopped");
+          const stopped = generate(); const stoppedRequest = await nextRequest();
+          await wait(FAST.busyDelay + 140);
+          const stoppedItem = busyToast;
+          newListing();
+          goneOnStop = Boolean(stoppedItem) && stoppedItem.classList.contains("leaving") && !busyToast;
+          complete(stoppedRequest, listing("Never used")); await stopped;
+        });
+        lc(() => shownWhileWriting && goneWhenReady, "Messages: writing a listing shows Working while it runs, and it goes when the listing is ready");
+        lc(() => goneOnStop, "Messages: Working also goes when its task is stopped (New listing)");
+        lc(() => /^Still writing your listing\u2026 \d+ s$/.test(waited) && ListingCore.TOAST_TIMES.busyElapsed === 10000,
+          "Messages: after 10 s Working says how long it has waited (Still writing your listing… 14 s)");
+
+        /* -- fading, holding, the time-left line, repeats, at most three -- */
+        clearToasts();
+        let stillThere = false, allFaded = false;
+        await act(async () => {
+          const items = [toast("ok", "Fixture fades."), toast("note", "Fixture notice fades."), toast("err", "Fixture problem fades.")];
+          await wait(40);
+          stillThere = items.every(item => !item.classList.contains("leaving"));
+          await until(() => items.every(item => item.classList.contains("leaving") || !item.isConnected), FAST.err + 1500);
+          allFaded = items.every(item => item.classList.contains("leaving") || !item.isConnected);
+        });
+        lc(() => stillThere && allFaded, "Messages: Done, Notice and Problem fade on their own");
+        let pointerHolds = false, pointerResumes = false, lineRuns = false, linePauses = false;
+        await act(async () => {
+          const item = toast("err", "Fixture held by the pointer.");
+          const line = item.querySelector(".toast-life");
+          lineRuns = line.getAnimations()[0].playState === "running";
+          item.dispatchEvent(new PointerEvent("pointerenter"));
+          linePauses = line.getAnimations()[0].playState === "paused";
+          await wait(FAST.err + 160);
+          pointerHolds = !item.classList.contains("leaving") && toastInfo(item).held;
+          item.dispatchEvent(new PointerEvent("pointerleave"));
+          await until(() => item.classList.contains("leaving") || !item.isConnected, FAST.err + 1500);
+          pointerResumes = item.classList.contains("leaving") || !item.isConnected;
+        });
+        lc(() => pointerHolds && pointerResumes, "Messages: pointing at a message stops its time; it fades after the pointer leaves");
+        lc(() => lineRuns && linePauses, "Messages: a thin line shows the time left and stops while the message is held");
+        let focusHolds = false, focusResumes = false;
+        await act(async () => {
+          const item = toast("note", "Fixture held by focus.", {action: {label: "Fixture action", run() {}}});
+          actionOf(item).focus();
+          await wait(FAST.note + 160);
+          focusHolds = !item.classList.contains("leaving") && toastInfo(item).held;
+          $("notes").focus();
+          await until(() => item.classList.contains("leaving") || !item.isConnected, FAST.note + 1500);
+          focusResumes = item.classList.contains("leaving") || !item.isConnected;
+        });
+        lc(() => focusHolds && focusResumes, "Messages: keyboard focus inside a message stops its time; it fades once focus leaves");
+        clearToasts();
+        let once = false, twice = "", restarted = false, thrice = "";
+        await act(async () => {
+          const first = toast("err", "Fixture repeated problem.");
+          await wait(150);
+          const leftBefore = toastInfo(first).left;
+          const second = toast("err", "Fixture repeated problem.");
+          once = first === second && live().filter(item => textOf(item) === "Fixture repeated problem.").length === 1;
+          twice = first.querySelector(".toast-count").hidden ? "" : first.querySelector(".toast-count [aria-hidden]").textContent;
+          restarted = toastInfo(first).count === 2 && toastInfo(first).left > leftBefore + 100;
+          toast("err", "Fixture repeated problem.");
+          thrice = first.querySelector(".toast-count [aria-hidden]").textContent;
+        });
+        lc(() => once && twice === "\u00d72" && restarted && thrice === "\u00d73", "Messages: the same message again shows once with ×2 (×3…) and starts its time again");
+        clearToasts();
+        let capped = false;
+        await act(() => {
+          const items = ["one", "two", "three", "four"].map(n => toast("note", "Fixture message " + n + "."));
+          capped = live().length === 3 && items[0].classList.contains("leaving") && items.slice(1).every(item => !item.classList.contains("leaving"));
+        });
+        lc(() => capped, "Messages: at most three show at once; the oldest leaves first");
+
+        /* -- screen readers, focus, keyboard -- */
+        clearToasts();
+        let polite = "", assertive = "", regions = false, focusKept = false, workingHeardOnce = false;
+        await act(async () => {
+          $("notes").focus();
+          await wait(FAST.sayGap + 40);
+          toast("ok", "Fixture done for screen readers.");
+          polite = $("toastAnnounce").textContent;
+          toast("err", "Fixture problem for screen readers.", {action: {label: "Fixture fix", run() {}}});
+          // It waits its turn, so both are heard.
+          const waited = $("toastAlert").textContent === "";
+          await until(() => $("toastAlert").textContent !== "", 1000);
+          assertive = waited ? $("toastAlert").textContent : "";
+          focusKept = document.activeElement === $("notes");
+          await wait(FAST.sayGap + 40);
+          regions = !$("toastPanel").hasAttribute("aria-live") && $("toastAnnounce").getAttribute("aria-live") === "polite" &&
+            $("toastAlert").getAttribute("aria-live") === "assertive" && $("toastAnnounce").classList.contains("sr-only");
+          const before = $("toastAnnounce").textContent;
+          const item = toast("busy", "Fixture long task\u2026", {task: "fixture-long"});
+          const silentFirst = $("toastAnnounce").textContent === before;
+          await wait(FAST.busyDelay + 140);
+          const heard = $("toastAnnounce").textContent;
+          await wait(FAST.busyElapsed + FAST.tick * 2 + 140);
+          workingHeardOnce = silentFirst && heard === "Working: Fixture long task\u2026" && $("toastAnnounce").textContent === heard &&
+            textOf(item).startsWith("Still fixture long task\u2026");
+          dismissToast(item);
+        });
+        lc(() => polite === "Done: Fixture done for screen readers." && assertive === "Problem: Fixture problem for screen readers." && regions && workingHeardOnce && focusKept,
+          "Messages: screen readers hear each once (polite, or assertive for a Problem), never the countdown, and a message never takes focus");
+        clearToasts();
+        let backToNotes = false, escapeCloses = false;
+        await act(() => {
+          $("notes").focus();
+          const item = toast("err", "Fixture closed from the keyboard.");
+          const close = item.querySelector(".toast-close");
+          close.focus();
+          close.click();
+          backToNotes = item.classList.contains("leaving") && document.activeElement === $("notes");
+          $("brand").focus();
+          const other = toast("note", "Fixture closed with Esc.");
+          other.querySelector(".toast-close").focus();
+          other.querySelector(".toast-close").dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true, cancelable: true}));
+          escapeCloses = other.classList.contains("leaving") && document.activeElement === $("brand");
+        });
+        lc(() => backToNotes && escapeCloses, "Messages: closing one from the keyboard (or with Esc) puts focus back where the seller was, not on the page");
+        lc(() => [...document.querySelector("style").sheet.cssRules].some(rule => rule instanceof CSSMediaRule && /prefers-reduced-motion:\s*reduce/.test(rule.conditionText) &&
+          [...rule.cssRules].some(inner => inner.selectorText === ".toast-item:not(.leaving)" && inner.style.animationName === "none")),
+          "Messages: with reduced motion they don't slide in (the time-left line stays)");
+
+        /* -- where they sit: below dialogs, never over the Generate button or its bar -- */
+        clearToasts();
+        let belowDialog = false;
+        await act(async () => {
+          const item = toast("note", "Fixture under the dialog.");
+          await openSettings("ai");
+          const box = item.getBoundingClientRect();
+          const top = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+          belowDialog = Number(getComputedStyle($("toastPanel")).zIndex) < Number(getComputedStyle($("settingsOverlay")).zIndex) && !$("toastPanel").contains(top);
+          closeSettings();
+        });
+        lc(() => belowDialog, "Messages: they sit below dialogs");
+        const layoutAt = async (width, height, measure) => {
+          const frame = document.createElement("iframe");
+          frame.style.cssText = "position:fixed;left:-20000px;top:0;border:0;width:" + width + "px;height:" + height + "px";
+          const loaded = new Promise(resolve => { frame.onload = resolve; });
+          frame.srcdoc = '<!doctype html><html data-theme="light"><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>' +
+            document.querySelector("style").textContent + '</style><style>*,*::before,*::after{animation:none!important;transition:none!important}</style></head><body>' +
+            document.querySelector("header").outerHTML + document.querySelector("main").outerHTML + $("toastPanel").outerHTML + '</body></html>';
+          document.body.append(frame);
+          await loaded;
+          try { return measure(frame.contentDocument); } finally { frame.remove(); }
+        };
+        const overlaps = (a, b) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+        let desktopClear = false, phoneClear = false;
+        await act(async () => {
+          clearToasts();
+          toast("ok", "Started a new listing. The previous one is in Drafts \u203a Recent drafts.", {action: {label: "Undo", run() {}}});
+          toast("err", NO_AI, {title: "Couldn't write the listing", action: {label: "Set up AI", run() {}, fix: true}});
+          toast("note", "Condition updated in the listing. Check the description doesn't mention the old condition.");
+          desktopClear = await layoutAt(1366, 768, doc => {
+            const bar = doc.querySelector(".gen-bar").getBoundingClientRect(), button = doc.getElementById("generateBtn").getBoundingClientRect();
+            const items = [...doc.querySelectorAll("#toastPanel .toast-item")].map(item => item.getBoundingClientRect());
+            return items.length === 3 && items.every(box => !overlaps(box, bar) && !overlaps(box, button) && box.right <= 1366 && box.bottom <= 768 && box.top >= 0);
+          });
+          phoneClear = await layoutAt(390, 844, doc => {
+            // The bar grows when it suggests a template; the messages must still clear it.
+            doc.getElementById("templateSuggest").hidden = false;
+            doc.getElementById("templateSuggestText").textContent = "A template matches this item: Canon AE-1 Program 35mm film camera body. Use it to skip the AI request.";
+            const bar = doc.querySelector(".gen-bar");
+            doc.documentElement.style.setProperty("--gen-bar-h", bar.offsetHeight + 8 + "px"); // what the app keeps it at
+            const barBox = bar.getBoundingClientRect(), button = doc.getElementById("generateBtn").getBoundingClientRect();
+            const items = [...doc.querySelectorAll("#toastPanel .toast-item")].map(item => item.getBoundingClientRect());
+            return barBox.height > 100 && items.length === 3 && items.every(box => box.height > 40 && box.bottom <= barBox.top && !overlaps(box, button) && box.left >= 0 && box.right <= 390) &&
+              doc.documentElement.scrollWidth <= 390;
+          });
+        });
+        lc(() => desktopClear && phoneClear && getComputedStyle(document.documentElement).getPropertyValue("--gen-bar-h").trim() === document.querySelector(".gen-bar").offsetHeight + 8 + "px",
+          "Messages: they never cover the Generate button or its bar, at 1366×768 or at 390×844 (all three shown, above the bar)");
+        clearToasts();
+
+        /* -- plain words and fix buttons (nothing set up, so status checks agree with the failures) -- */
+        await act(() => { aiStatus = noneSetUp; applyAiStatus(noneSetUp); });
+        const failures = {};
+        for (const [kind, status] of [["no_provider", 503], ["provider_auth", 502], ["provider_storage", 503], ["provider_busy", 429]]) {
+          await act(async () => {
+            newListing(); typeInto($("notes"), "Fix fixture " + kind);
+            const run = generate(); const request = await nextRequest();
+            failWith(request, status, {kind, error: ListingCore.ERROR_MESSAGES[kind].text});
+            await run;
+            const item = liveOf("err").at(-1);
+            failures[kind] = {action: (actionOf(item) || {}).textContent || "", primary: Boolean(actionOf(item) && actionOf(item).classList.contains("btn-primary")),
+              title: titleOf(item), text: textOf(item)};
+          });
+        }
+        lc(() => ["no_provider", "provider_auth", "provider_storage"].every(kind => failures[kind].action === "Set up AI" && failures[kind].primary) &&
+          failures.provider_busy.action === "" && failures.no_provider.title === "Couldn't write the listing" && failures.no_provider.text === NO_AI,
+          "Messages: an AI problem with a fix offers Set up AI (no service, key turned down, keys unreadable); a busy service doesn't");
+        let aiOpened = false;
+        await act(async () => {
+          newListing(); typeInto($("notes"), "Set up AI fixture");
+          const run = generate(); const request = await nextRequest();
+          failWith(request, 503, {kind: "no_provider", error: NO_AI}); await run;
+          actionOf(liveOf("err").at(-1)).click();
+          await settleUi();
+          aiOpened = $("settingsOverlay").classList.contains("open") && $("settingsTab-ai").getAttribute("aria-selected") === "true" && document.activeElement === keyPaste.input;
+          closeSettings();
+        });
+        lc(() => aiOpened, "Set up AI opens Settings › AI with the paste box ready");
+        let generateNote = "", generateFix = "", backToNoteFix = false;
+        await act(async () => {
+          generateNote = $("generateNote").hidden ? "" : $("generateNote").querySelector(".step-note-text").textContent;
+          const fix = $("generateNote").querySelector(".step-note-fix");
+          generateFix = fix.hidden ? "" : fix.textContent;
+          fix.focus(); fix.click(); await settleUi();
+          document.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}));
+          backToNoteFix = !$("settingsOverlay").classList.contains("open") && document.activeElement === fix;
+        });
+        lc(() => generateNote === "Couldn't write the listing: no AI service is connected yet." && generateFix === "Set up AI" && $("outputCard").contains($("generateNote")),
+          "Step notes: a failed listing keeps a note under Review and copy, with Set up AI");
+        lc(() => backToNoteFix, "Esc closes Settings and focus goes back to the button that opened it");
+        await act(() => applyAiStatus(twoSetUp));
+        lc(() => $("generateNote").hidden, "Step notes: the note goes as soon as an AI service is connected");
+        let busyNote = false, clearedBySuccess = false, droppedOnNew = false, keptOnNew = false;
+        await act(async () => {
+          const busy = {kind: "provider_busy", error: "The AI services are busy right now. Your draft is safe. Try again in 30 seconds."};
+          newListing(); typeInto($("notes"), "Busy note fixture");
+          let run = generate(), request = await nextRequest();
+          failWith(request, 429, busy); await run;
+          busyNote = !$("generateNote").hidden && $("generateNote").querySelector(".step-note-text").textContent === "Couldn't write the listing. The AI services are busy right now. Try again in a moment." &&
+            $("generateNote").querySelector(".step-note-fix").hidden;
+          run = generate(); request = await nextRequest(); complete(request, listing("Busy note fixture title")); await run;
+          clearedBySuccess = $("generateNote").hidden;
+          run = generate(); request = await nextRequest(); failWith(request, 429, busy); await run;
+          newListing();
+          droppedOnNew = $("generateNote").hidden;
+          typeInto($("notes"), "Setup note fixture");
+          run = generate(); request = await nextRequest(); failWith(request, 503, {kind: "no_provider", error: NO_AI}); await run;
+          const setupNote = !$("generateNote").hidden;
+          newListing();
+          keptOnNew = setupNote && $("generateNote").hidden;
+          applyAiStatus(twoSetUp);
+        });
+        lc(() => busyNote && clearedBySuccess, "Step notes: a note without a fix says what its message said, and stays until the next listing is written");
+        lc(() => droppedOnNew && keptOnNew, "Step notes: New listing clears them all, a note about a missing setup too");
+        let lookupToasts = -1, lookupProblems = -1, lookupText = "", lookupAction = "", lookupNoLine = false, ebayOpened = false, authNote = "", noteGoneAfterKeys = false;
+        await act(async () => {
+          clearToasts(); newListing(); typeInto($("productSearch"), "Canon AE-1");
+          const run = lookupProduct(); const requests = [await nextRequest(), await nextRequest()];
+          for (const request of requests) request.resolve(reply({error: NO_EBAY, kind: "ebay_not_configured", fallback: true}));
+          await run; await settleUi();
+          lookupToasts = liveOf("note").length; lookupProblems = liveOf("err").length;
+          const item = liveOf("note").at(-1);
+          lookupText = textOf(item); lookupAction = (actionOf(item) || {}).textContent || "";
+          lookupNoLine = $("lookupNote").hidden;
+          actionOf(item).click(); await settleUi();
+          ebayOpened = $("settingsOverlay").classList.contains("open") && $("settingsTab-ebay").getAttribute("aria-selected") === "true" && document.activeElement === $("ebayClientId");
+          closeSettings();
+          // eBay turning saved keys down is a Problem, and its line goes once eBay keys are saved.
+          const AUTH = "eBay didn't accept your eBay keys. Check the Client ID and Client Secret in Settings \u203a eBay.";
+          const again = lookupProduct(); const more = [await nextRequest(), await nextRequest()];
+          for (const request of more) failWith(request, 502, {error: AUTH, kind: "ebay_auth", fallback: true});
+          await again; await settleUi();
+          authNote = $("lookupNote").hidden ? "" : $("lookupNote").querySelector(".step-note-text").textContent + "|" + $("lookupNote").querySelector(".step-note-fix").textContent;
+          await openSettings("ebay");
+          $("ebayClientId").value = "fixture-client-id";
+          const save = saveEbayCreds(); const saveRequest = await nextRequest();
+          saveRequest.resolve(reply({saved: ["EBAY_CLIENT_ID"], message: "Saved"})); await save;
+          noteGoneAfterKeys = $("lookupNote").hidden;
+          closeSettings();
+        });
+        lc(() => lookupToasts === 1 && lookupProblems === 0 && lookupText === NO_EBAY && lookupAction === "Open Settings",
+          "Look up without eBay keys is a Notice (it's optional), said once in plain words, with Open Settings");
+        lc(() => lookupNoLine, "Look up without eBay keys leaves no red line under Look up");
+        lc(() => ebayOpened, "Open Settings opens the eBay tab at its first box");
+        lc(() => authNote === "eBay didn't accept your eBay keys.|Open Settings" && noteGoneAfterKeys,
+          "Step notes: eBay turning the keys down keeps a line with Open Settings, which goes once eBay keys are saved");
+        lc(() => {
+          const code = [...document.scripts].map(script => script.textContent).join("\n");
+          return !/Generation failed|Lookup failed|Keyword mining unavailable|provider keys|EBAY_CLIENT_ID|OAuth exchange failed|Reference retrieval failed|Save failed: |"HTTP " \+/.test(code);
+        }, "Plain words: no leftover technical messages (Generation failed, Lookup failed, provider keys…)");
+        let startHere = "";
+        await act(() => { newListing(); clearToasts(); generate(); startHere = textOf(live().at(-1)); });
+        lc(() => startHere === "Start by describing the item." && document.activeElement === $("notes"), "Plain words: Generate with nothing to go on says Start by describing the item.");
+        pending.splice(0);
+
+        /* -- Settings: tabs -- */
+        let tabsNamed = false, arrows = false, tabOpened = "";
+        await act(async () => {
+          await openSettings();
+          const tabs = [...$("settingsTabs").querySelectorAll('[role="tab"]')];
+          tabsNamed = $("settingsTabs").getAttribute("role") === "tablist" && tabs.map(tab => tab.textContent).join("|") === "AI|Your shop|eBayoptional|About" &&
+            tabs.every(tab => $(tab.getAttribute("aria-controls")).getAttribute("role") === "tabpanel");
+          const press = key => document.activeElement.dispatchEvent(new KeyboardEvent("keydown", {key, bubbles: true, cancelable: true}));
+          $("settingsTab-ai").focus(); press("ArrowRight");
+          const a = document.activeElement === $("settingsTab-shop") && !$("settingsPane-shop").hidden && $("settingsPane-ai").hidden && $("settingsTab-shop").getAttribute("aria-selected") === "true";
+          press("End"); const b = document.activeElement === $("settingsTab-about") && !$("settingsPane-about").hidden;
+          press("ArrowRight"); const c = document.activeElement === $("settingsTab-ai");
+          press("ArrowLeft"); const d = document.activeElement === $("settingsTab-about");
+          press("Home"); const e = document.activeElement === $("settingsTab-ai") && $("settingsTab-ai").tabIndex === 0 && $("settingsTab-about").tabIndex === -1;
+          arrows = a && b && c && d && e;
+          closeSettings();
+          await openSettings("about"); tabOpened = settingsTab + ":" + !$("settingsPane-about").hidden; closeSettings();
+          await openSettings("shop"); tabOpened += "," + settingsTab; closeSettings();
+        });
+        lc(() => tabsNamed, "Settings has the tabs AI · Your shop · eBay (optional) · About");
+        lc(() => arrows, "Settings tabs move with the arrow keys, Home and End");
+        lc(() => tabOpened === "about:true,shop", "openSettings(tab) opens the tab asked for");
+
+        /* -- Settings › AI: the paste box -- */
+        const geminiKey = "AIzaSyFixtureGeminiKey0123456789a1B2";
+        let aiLead = false, pasted = null, checking = "", boxEmpty = false, connected = "", neverShown = false, pillReady = false;
+        await act(async () => {
+          aiStatus = noneSetUp; applyAiStatus(noneSetUp);
+          await openSettings("ai");
+          aiLead = $("settingsPane-ai").querySelector(".settings-lead").textContent === "Paste a key from any supported service; Marteloio recognises it, saves it and tests it." &&
+            $("settingsPane-ai").contains(keyPaste.input) && !document.querySelector("#groqRemove, #geminiRemove, #openrouterRemove") &&
+            !/plain text|Remove saved/i.test($("settingsOverlay").textContent);
+          const data = new DataTransfer(); data.setData("text/plain", "  " + geminiKey + "\n");
+          const event = new ClipboardEvent("paste", {clipboardData: data, bubbles: true, cancelable: true});
+          keyPaste.input.dispatchEvent(event);
+          const request = await nextRequest();
+          pasted = {path: request.path, body: JSON.parse(request.opts.body), prevented: event.defaultPrevented};
+          checking = keyPaste.result.textContent;
+          boxEmpty = keyPaste.input.value === "";
+          const ready = {ready: true, retry_in: 0, providers: [provider("freellmapi", "FreeLLMAPI"), provider("gemini", "Google Gemini", {configured: true, state: "ready", key_hint: "a1B2"}),
+            provider("groq", "Groq"), provider("openrouter", "OpenRouter")]};
+          aiStatus = ready;
+          request.resolve(reply({saved: true, provider: "gemini", label: "Google Gemini", test: {ok: true, ms: 1180, model: "gemini-flash-latest"}, status: ready}));
+          await until(() => keyPaste.result.classList.contains("is-ok"));
+          connected = keyPaste.result.textContent;
+          neverShown = ![...document.querySelectorAll("input")].some(input => input.value.includes("FixtureGeminiKey")) && !document.body.innerHTML.includes("FixtureGeminiKey");
+          pillReady = $("statusText").textContent === "AI ready";
+        });
+        lc(() => aiLead, "Settings › AI leads with one paste box; the old remove-when-saving boxes and plain-text note are gone");
+        lc(() => pasted.path === "/settings/ai" && pasted.body.provider === "auto" && pasted.body.key === geminiKey && pasted.prevented &&
+          checking === "Checking your Google Gemini key\u2026" && boxEmpty, "Pasting a key saves and tests it at once (provider auto), saying Checking your Google Gemini key…");
+        lc(() => connected === "Google Gemini is connected \u00b7 it answered in 1.2 seconds" && neverShown,
+          "The paste box then says Google Gemini is connected · it answered in 1.2 seconds, and never shows the key");
+        lc(() => pillReady, "The status pill refreshes after a key is saved");
+        const recognised = [];
+        for (const [text, label, what] of [["gsk_fixtureGroqKey0123456789", "Groq", "key"], ["sk-or-v1-fixture0123456789", "OpenRouter", "key"],
+          ["freellmapi-0a1b2c3d0a1b2c3d", "FreeLLMAPI", "key"], ["sk-cp-fixtureProfileKey0123", "FreeLLMAPI", "key"],
+          ["http://127.0.0.1:31415/v1/t/flmurl_fixtureToken0123", "FreeLLMAPI", "address"]]) {
+          await act(async () => {
+            const save = keyPaste.save(text); const request = await nextRequest();
+            recognised.push(keyPaste.result.textContent === "Checking your " + label + " " + what + "\u2026" && JSON.parse(request.opts.body).provider === "auto");
+            request.resolve(reply({saved: true, provider: "x", label, test: null, status: aiStatus})); await save;
+          });
+        }
+        lc(() => recognised.length === 5 && recognised.every(Boolean), "The paste box recognises Groq, OpenRouter and FreeLLMAPI keys and a FreeLLMAPI address by how they start");
+        let failedTest = "";
+        await act(async () => {
+          const save = keyPaste.save(geminiKey.replace("0123", "9999")); const request = await nextRequest();
+          request.resolve(reply({saved: true, provider: "gemini", label: "Google Gemini", status: aiStatus,
+            test: {ok: false, kind: "key_rejected", message: "Google Gemini didn't accept this key. Copy the whole key and paste it again."}}));
+          await save;
+          failedTest = keyPaste.result.classList.contains("is-err") ? keyPaste.result.textContent : "";
+        });
+        lc(() => failedTest === "Google Gemini didn't accept this key. Copy the whole key and paste it again.", "A failed test shows the service's own plain reason");
+        let refused = "";
+        await act(async () => {
+          keyPaste.input.value = "hello-this-is-not-a-key";
+          keyPaste.input.dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true, cancelable: true}));
+          const request = await nextRequest();
+          failWith(request, 400, {kind: "unknown_key", error: ListingCore.ERROR_MESSAGES.unknown_key.text});
+          await until(() => keyPaste.result.classList.contains("is-err"));
+          refused = keyPaste.result.textContent + "|" + keyPaste.input.value;
+        });
+        lc(() => refused === ListingCore.ERROR_MESSAGES.unknown_key.text + "|hello-this-is-not-a-key", "Text that isn't a key is refused in plain words and stays in the box to fix");
+        let fromClipboard = false, askedForPaste = "";
+        await act(async () => {
+          keyPaste.input.value = "";
+          const clipboard = navigator.clipboard, hadOwn = Object.prototype.hasOwnProperty.call(clipboard, "readText"), realRead = clipboard.readText;
+          try {
+            clipboard.readText = async () => "gsk_fixtureClipboardKey0123";
+            keyPaste.button.click();
+            const request = await nextRequest();
+            fromClipboard = JSON.parse(request.opts.body).key === "gsk_fixtureClipboardKey0123";
+            request.resolve(reply({saved: true, provider: "groq", label: "Groq", test: {ok: true, ms: 800}, status: aiStatus}));
+            await until(() => !keyPaste.button.disabled);
+            clipboard.readText = async () => { throw new DOMException("Fixture refused", "NotAllowedError"); };
+            $("settingsTab-ai").focus();
+            keyPaste.button.click();
+            await until(() => /to paste/.test(keyPaste.result.textContent));
+            askedForPaste = (document.activeElement === keyPaste.input) + "|" + keyPaste.result.textContent;
+          } finally { if (hadOwn) clipboard.readText = realRead; else delete clipboard.readText; }
+        });
+        lc(() => fromClipboard && /^true\|Press (Ctrl\+V|\u2318V) to paste\.$/.test(askedForPaste), "Add key reads the clipboard, or puts focus in the box and says Press Ctrl+V to paste");
+        let mounted = null;
+        await act(async () => {
+          const host = document.createElement("div"); document.body.append(host);
+          let outcome = null;
+          const box = mountKeyPaste(host, {button: "Paste", primary: true, hint: "Works with keys from Google Gemini, Groq, OpenRouter and FreeLLMAPI.", onResult: result => { outcome = result; }});
+          const save = box.save("AIzaSyFixtureWelcomeKey0123456789ab"); const request = await nextRequest();
+          request.resolve(reply({saved: true, provider: "gemini", label: "Google Gemini", test: {ok: true, ms: 1200}, status: aiStatus})); await save;
+          mounted = {button: box.button.classList.contains("btn-primary") && box.button.textContent === "Paste", hint: (host.querySelector(".key-paste-hint") || {}).textContent, outcome};
+          host.remove();
+        });
+        lc(() => typeof startAiSetup === "function" && mounted.button && mounted.hint === "Works with keys from Google Gemini, Groq, OpenRouter and FreeLLMAPI." &&
+          mounted.outcome.ok && mounted.outcome.saved && mounted.outcome.provider === "gemini" && mounted.outcome.text === "Google Gemini is connected",
+          "mountKeyPaste(container, options) makes another working paste box (for the welcome guide)");
+
+        /* -- Settings › AI: one line per service -- */
+        await act(() => { aiStatus = twoSetUp; applyAiStatus(twoSetUp); });
+        lc(() => $("aiSummary").textContent === "2 of 4 set up \u00b7 tried in this order: FreeLLMAPI, Google Gemini",
+          "The summary says 2 of 4 set up · tried in this order: FreeLLMAPI, Google Gemini");
+        lc(() => {
+          const rows = [...$("aiRows").children];
+          return rows.length === 3 && rows[0].dataset.provider === "freellmapi" && rows[1].dataset.provider === "gemini" &&
+            rows[1].querySelector(".ai-tag").textContent === "Easiest free key" && rows[2].querySelector(".ai-name").textContent === "Other AI services" &&
+            $("aiOthers").hidden && [...$("aiOthers").children].map(row => row.dataset.provider).join() === "groq,openrouter";
+        }, "One line per service in try order: FreeLLMAPI, Google Gemini (Easiest free key), then Groq and OpenRouter folded under Other AI services");
+        lc(() => aiRowOf("gemini").querySelector(".ai-hint").textContent === "Key \u2026a1B2" && !aiRowOf("gemini").querySelector(".ai-use").hidden &&
+          aiRowOf("gemini").querySelector('.ai-use[role="switch"]').getAttribute("aria-checked") === "true" && aiRowOf("groq").querySelector(".ai-use").hidden,
+          "A service that is set up shows Key …a1B2 and a Use switch; one that isn't has no switch");
+        let chips = "";
+        await act(() => {
+          applyAiStatus({ready: true, retry_in: 0, providers: [{...twoSetUp.providers[0], state: "rate_limited", retry_in: 40}, {...twoSetUp.providers[1], state: "key_rejected"},
+            provider("groq", "Groq", {configured: true, enabled: false, state: "disabled", key_hint: "WXYZ"}), provider("openrouter", "OpenRouter")]});
+          chips = AI_ORDER.map(id => aiRowOf(id).querySelector(".ai-chip").textContent).join("|");
+          applyAiStatus(twoSetUp);
+          chips += "|" + aiRowOf("gemini").querySelector(".ai-chip").textContent;
+        });
+        lc(() => chips === "Resting 40 s|Key rejected|Off|Not set up|Ready", "Status chips read Ready, Not set up, Resting 40 s, Key rejected and Off");
+        await act(() => aiRowOf("gemini").querySelector(".ai-row-toggle").click());
+        lc(() => {
+          const row = aiRowOf("gemini"), link = row.querySelector(".ai-note a");
+          return row.querySelector(".ai-row-toggle").getAttribute("aria-expanded") === "true" && !$("aiBody-gemini").hidden &&
+            row.querySelector(".ai-note").textContent.startsWith("Google's free AI. The easiest key to get: sign in with a Google account and create one in about 2 minutes.") &&
+            link.textContent === "Get a free key" && link.href === "https://aistudio.google.com/app/apikey" && link.target === "_blank" && /\bnoopener\b/.test(link.rel) &&
+            row.querySelector("label[for='aiKey-gemini']") && !row.querySelector(".ai-save").hidden && !row.querySelector(".ai-test").hidden && !row.querySelector(".ai-remove").hidden;
+        }, "Opening a line shows its note, Get a free key (in a new tab), its key box, Save and test, Test again and Remove");
+        lc(() => {
+          const href = id => aiRowOf(id).querySelector(".ai-note a").href, note = id => aiRowOf(id).querySelector(".ai-note").textContent;
+          return href("groq") === "https://console.groq.com/keys" && href("openrouter") === "https://openrouter.ai/keys" && href("freellmapi") === "https://github.com/tashfeenahmed/freellmapi" &&
+            note("groq").startsWith("Used as a backup when the others are busy.") && note("openrouter").startsWith("Used as a backup when the others are busy.") &&
+            note("freellmapi").startsWith("A free app you run on this computer. It spreads requests over many free AI services and moves on when one is busy, so it's tried first.");
+        }, "Each service has its own note and free-key link");
+        let useBody = null, useOff = false;
+        await act(async () => {
+          aiRowOf("gemini").querySelector(".ai-use").click();
+          const request = await nextRequest();
+          useBody = JSON.parse(request.opts.body);
+          const off = {...twoSetUp, providers: twoSetUp.providers.map(p => p.id === "gemini" ? {...p, enabled: false, state: "disabled"} : p)};
+          aiStatus = off;
+          request.resolve(reply({saved: true, provider: "gemini", label: "Google Gemini", test: null, status: off}));
+          await until(() => aiRowOf("gemini").querySelector(".ai-chip").textContent === "Off");
+          useOff = aiRowOf("gemini").querySelector(".ai-use").getAttribute("aria-checked") === "false" && $("aiSummary").textContent === "2 of 4 set up \u00b7 tried in this order: FreeLLMAPI";
+        });
+        lc(() => useBody.provider === "gemini" && useBody.enabled === false && Object.keys(useBody).length === 2 && useOff, "The Use switch posts enabled, and the line then reads Off");
+        let tested = null, testedText = "";
+        await act(async () => {
+          aiRowOf("gemini").querySelector(".ai-test").click();
+          const request = await nextRequest();
+          tested = {path: request.path, body: JSON.parse(request.opts.body)};
+          request.resolve(reply({ok: true, ms: 812, model: "gemini-flash-latest"}));
+          await until(() => aiRowOf("gemini").querySelector(".key-result").classList.contains("is-ok"));
+          testedText = aiRowOf("gemini").querySelector(".key-result").textContent;
+        });
+        lc(() => tested.path === "/ai/test" && tested.body.provider === "gemini" && testedText === "Working \u00b7 it answered in 0.8 seconds",
+          "Test again tests that one service and says how fast it answered");
+        let firstClickQuiet = false, removeBody = null, removedText = "";
+        await act(async () => {
+          confirms = 0;
+          const before = pending.length, remove = aiRowOf("gemini").querySelector(".ai-remove");
+          remove.click(); await settleUi();
+          firstClickQuiet = pending.length === before && remove.textContent === "Remove now" && confirms === 0;
+          remove.click();
+          const request = await nextRequest();
+          removeBody = JSON.parse(request.opts.body);
+          const gone = {...twoSetUp, providers: twoSetUp.providers.map(p => p.id === "gemini" ? {...p, configured: false, state: "off", key_hint: ""} : p)};
+          aiStatus = gone;
+          request.resolve(reply({saved: true, provider: "gemini", label: "Google Gemini", test: null, status: gone}));
+          await until(() => aiRowOf("gemini").querySelector(".key-result").classList.contains("is-ok"));
+          removedText = aiRowOf("gemini").querySelector(".key-result").textContent + "|" + aiRowOf("gemini").querySelector(".ai-chip").textContent;
+        });
+        lc(() => firstClickQuiet && removeBody.provider === "gemini" && removeBody.remove === true && confirms === 0 && removedText === "Google Gemini is removed from this computer.|Not set up",
+          "Remove asks again on its own button (no pop-up), then removes the key");
+        let findPath = "", found = "", addressFilled = false, aloneText = "", withKey = null;
+        await act(async () => {
+          const row = aiRowOf("freellmapi"), address = $("aiAddress-freellmapi");
+          setAiRowOpen(row, true);
+          const before = address.value;
+          holdDetect = true;
+          row.querySelector(".ai-find").click();
+          const request = await nextRequest();
+          findPath = request.path;
+          request.resolve(reply({found: true, ready: true, base_url: "http://127.0.0.1:3001/v1", reason: ""}));
+          await until(() => row.querySelector(".key-result").classList.contains("is-ok"));
+          found = row.querySelector(".key-result").textContent;
+          addressFilled = before === "http://127.0.0.1:31415/v1" && address.value === "http://127.0.0.1:3001/v1";
+          // A found address alone isn't sent (it could replace a saved address that carries its own access code)…
+          const waiting = pending.length;
+          row.querySelector(".ai-save").click(); await settleUi();
+          aloneText = pending.length === waiting ? row.querySelector(".key-result").textContent : "sent";
+          // …but it goes along with a new FreeLLMAPI key.
+          row.querySelector(".ai-key").value = "freellmapi-0a1b2c3d0a1b2c3d";
+          row.querySelector(".ai-save").click();
+          const save = await nextRequest();
+          withKey = JSON.parse(save.opts.body);
+          save.resolve(reply({saved: true, provider: "freellmapi", label: "FreeLLMAPI", test: {ok: true, ms: 3100}, status: aiStatus}));
+          await until(() => !row.querySelector(".ai-save").disabled);
+        });
+        lc(() => findPath === "/ai/freellmapi/detect" && found === "FreeLLMAPI is running \u00b7 at http://127.0.0.1:3001/v1" && addressFilled,
+          "FreeLLMAPI's line has its address and Find it again, which looks for it on this computer");
+        lc(() => aloneText === "Paste a key first." && withKey.provider === "freellmapi" && withKey.key === "freellmapi-0a1b2c3d0a1b2c3d" && withKey.base_url === "http://127.0.0.1:3001/v1",
+          "A FreeLLMAPI address found by Find it again is only sent together with a new FreeLLMAPI key");
+        let foundCard = "", cardToBox = false, emptyCard = "";
+        await act(async () => {
+          closeSettings();
+          aiStatus = noneSetUp; applyAiStatus(noneSetUp);
+          detectReply = {found: true, ready: true, base_url: "http://127.0.0.1:31415/v1", reason: ""};
+          await openSettings("ai");
+          await until(() => !$("aiFound").hidden);
+          foundCard = $("aiFound").hidden ? "" : $("aiFoundText").textContent;
+          $("aiFoundUse").click();
+          cardToBox = document.activeElement === keyPaste.input;
+          closeSettings();
+          detectReply = {found: true, ready: false, base_url: "http://127.0.0.1:31415/v1", reason: "no_upstreams"};
+          await openSettings("ai");
+          await until(() => !$("aiFound").hidden && $("aiFoundText").textContent.includes("no AI services"));
+          emptyCard = $("aiFound").hidden ? "" : $("aiFoundText").textContent;
+          closeSettings();
+          detectReply = savedDetect;
+        });
+        lc(() => foundCard === "FreeLLMAPI is running on this computer. To use it, copy its key from the tray icon: Show Compact Panel \u203a Copy Key." && cardToBox,
+          "FreeLLMAPI running but not set up: a card says how to copy its key, and Use FreeLLMAPI goes to the paste box");
+        lc(() => emptyCard.startsWith("FreeLLMAPI is running on this computer, but it has no AI services yet."), "The card says plainly when FreeLLMAPI has no AI services yet");
+
+        /* -- Your shop, eBay, About, Quit -- */
+        lc(() => ["storeName", "ebUsername", "logoUrl", "fbScore", "fbPct", "memberYear", "fbPctError", "memberYearError"].every(id => $("settingsPane-shop").contains($(id))) &&
+          !$("settingsPane-ai").contains($("storeName")), "Your shop holds the seller details, with their hints");
+        let ebayInline = false;
+        await act(async () => {
+          clearToasts();
+          await openSettings("ebay");
+          $("ebayClientId").value = ""; $("ebayClientSecret").value = "";
+          await saveEbayCreds();
+          ebayInline = $("ebayStatus").textContent === "Enter a Client ID or Client Secret first." && $("ebayStatus").classList.contains("is-err") && !live().length;
+          closeSettings();
+        });
+        lc(() => $("settingsPane-ebay").querySelector(".settings-lead").textContent === "Optional. Only needed for Look up, Find keywords and your feedback numbers." &&
+          ["ebayClientId", "ebayClientSecret", "saveEbayCredsBtn", "ruName", "connectBtn", "authCode", "exchangeBtn", "fetchStatsBtn"].every(id => $("settingsPane-ebay").contains($(id))) && ebayInline,
+          "eBay (optional) says what it's for, keeps the keys and Connect eBay, and reports inside the dialog");
+        let about = "";
+        await act(async () => {
+          fixtureAppInfo = {...savedInfo, build: "a1b2c3d4e5f6", data_dir: "C:\\Users\\Fixture\\AppData\\Local\\Marteloio"};
+          await openSettings("about");
+          await until(() => $("aboutBuild").textContent === "a1b2c3d4e5f6");
+          about = [$("aboutVersion").textContent, $("aboutBuild").textContent, $("aboutDataDir").textContent].join("|");
+          closeSettings();
+        });
+        lc(() => about === "0.2.0|a1b2c3d4e5f6|C:\\Users\\Fixture\\AppData\\Local\\Marteloio", "About shows the version, build and data folder");
+        lc(() => {
+          const links = [...$("settingsPane-about").querySelectorAll("a")], named = text => links.find(link => link.textContent === text);
+          return named("User guide").href === "https://github.com/browser-b0X/marteloio/blob/main/docs/GUIDE.md" && named("Report a problem").href === $("feedbackLink").href &&
+            named("License").href === "https://github.com/browser-b0X/marteloio/blob/main/LICENSE" && links.every(link => link.target === "_blank" && /\bnoopener\b/.test(link.rel));
+        }, "About links to the user guide, Report a problem and the License");
+        const quitWith = async installed => {
+          const build = installed ? "111111111111" : "222222222222";
+          fixtureAppInfo = {...savedInfo, installed, build};
+          await openSettings("about");
+          await until(() => $("aboutBuild").textContent === build);
+          $("quitBtn").click();
+          const request = await takeRequest("/shutdown");
+          const body = request && request.opts.body;
+          request.resolve(reply({ok: true}));
+          await until(() => document.body.classList.contains("app-stopped"));
+          const page = $("stoppedPage"), card = page && page.querySelector(".stopped-card").getBoundingClientRect();
+          const result = {body, text: page ? page.textContent : "", heading: page && document.activeElement === page.querySelector("h1"), title: document.title,
+            centred: Boolean(card) && Math.abs(card.left + card.width / 2 - document.documentElement.clientWidth / 2) < 3};
+          // Back to the app for the remaining checks.
+          if (page) page.remove();
+          document.body.classList.remove("app-stopped");
+          appStopped = false;
+          healthTimer = setInterval(checkHealth, 30000);
+          document.title = "Marteloio \u2014 Details, drafted.";
+          return result;
+        };
+        let installedQuit = null, zipQuit = null;
+        await act(async () => { installedQuit = await quitWith(true); });
+        await act(async () => { zipQuit = await quitWith(false); });
+        lc(() => installedQuit.body === "{}" && installedQuit.heading && installedQuit.centred && installedQuit.title === "Marteloio has stopped" &&
+          installedQuit.text === "Marteloio has stopped.You can close this tab.To use it again, open Marteloio from the Start menu or the desktop.",
+          "Quit Marteloio stops it and leaves a calm page: you can close this tab, open it again from the Start menu");
+        lc(() => zipQuit.text.endsWith("To use it again, open the Marteloio folder and run start-all again."), "A copy that wasn't installed says to run start-all again");
+
+        /* -- phone sheet, light and dark -- */
+        let sheet = false;
+        await act(async () => {
+          await openSettings("ai");
+          const frame = document.createElement("iframe");
+          frame.style.cssText = "position:fixed;left:-20000px;top:0;border:0;width:390px;height:844px";
+          const loaded = new Promise(resolve => { frame.onload = resolve; });
+          frame.srcdoc = '<!doctype html><html data-theme="light"><head><meta name="viewport" content="width=device-width, initial-scale=1"><style>' + document.querySelector("style").textContent +
+            '</style><style>*,*::before,*::after{animation:none!important}</style></head><body>' + $("settingsOverlay").outerHTML + '</body></html>';
+          document.body.append(frame); await loaded;
+          const doc = frame.contentDocument, modal = doc.querySelector(".settings-modal").getBoundingClientRect(), body = doc.querySelector(".settings-body");
+          sheet = Math.round(modal.width) === 390 && Math.round(modal.height) === 844 && modal.left === 0 && modal.top === 0 &&
+            doc.documentElement.scrollWidth <= 390 && body.scrollWidth <= body.clientWidth;
+          frame.remove();
+          closeSettings();
+        });
+        lc(() => sheet, "At 390px Settings is a full-screen sheet with nothing wider than the screen");
+        const themes = {};
+        for (const theme of ["light", "dark"]) {
+          await act(async () => {
+            $("appTheme").value = theme; $("appTheme").dispatchEvent(new Event("change"));
+            clearToasts();
+            const problem = toast("err", "Fixture contrast problem.", {action: {label: "Set up AI", run() {}, fix: true}});
+            const done = toast("ok", "Fixture contrast done.", {action: {label: "Undo", run() {}}});
+            await openSettings("ai");
+            applyAiStatus(twoSetUp);
+            setSettingsLine(keyPaste.result, "ok", "Google Gemini is connected", " \u00b7 it answered in 1.2 seconds");
+            const fg = el => getComputedStyle(el).color, bg = el => getComputedStyle(el).backgroundColor;
+            const pairs = [[problem.querySelector("p"), problem.querySelector(".toast")], [problem.querySelector(".toast-title"), problem.querySelector(".toast")],
+              [actionOf(problem), actionOf(problem)], [done.querySelector("p"), done.querySelector(".toast")], [actionOf(done), actionOf(done)],
+              [aiRowOf("gemini").querySelector(".ai-chip"), aiRowOf("gemini").querySelector(".ai-chip")], [keyPaste.result, keyPaste.result],
+              [$("settingsTab-ai"), document.querySelector(".settings-modal")], [aiRowOf("gemini").querySelector(".ai-hint"), aiRowOf("gemini")],
+              [$("settingsKeysNote"), document.querySelector(".settings-foot")], [aiRowOf("gemini").querySelector(".ai-tag"), aiRowOf("gemini").querySelector(".ai-tag")]];
+            themes[theme] = pairs.every(([a, b]) => contrastOf(fg(a), bg(b)) >= 4.5);
+            closeSettings(); clearToasts();
+          });
+        }
+        lc(() => themes.light && themes.dark, "Messages and Settings stay readable in light and dark");
+      } finally {
+        try { Object.assign(TOAST_TIMES, defaultTimes || {}); } catch (_) { /* older code */ }
+        window.confirm = fixtureConfirm;
+        aiStatus = savedStatus; detectReply = savedDetect; fixtureAppInfo = savedInfo; holdDetect = false;
+        try { closeSettings(); } catch (_) { /* older code */ }
+        try { applyAiStatus(savedStatus); } catch (_) { /* older code */ }
+        $("appTheme").value = savedTheme; $("appTheme").dispatchEvent(new Event("change"));
+        pending.splice(0);
+        clearToasts();
+        newListing();
+        if (soft) {
+          const note = document.createElement("p");
+          note.id = "wave2-soft-failures";
+          note.dataset.count = String(softFailures.length);
+          note.textContent = "WAVE 2 SOFT FAILURES (" + softFailures.length + "): " + softFailures.join(" | ");
+          panel.append(note);
+        }
+      }
+    }
+    /* ---- v0.2.0 wave 3: the guided first run ----
+       Welcome setup, the six-stop tour, Get set up, field tips and button tips, Start here, the AI
+       button and Help. Runs at the end of the suite, or alone with ?wave3. With ?soft it records
+       failures instead of stopping, so it can be run against the code before this wave (each check
+       must fail there). A fresh first run is a real page load: a copy of the app in a frame
+       (?app-only, see the top of this file), so this page's own storage is never touched by it. */
+    async function wave3Checks() {
+      const soft = new URLSearchParams(location.search).has("soft");
+      const softFailures = [];
+      const lc = (fn, label) => {
+        let ok = false;
+        try { ok = Boolean(fn()); } catch (_) { ok = false; }
+        if (ok || !soft) check(ok, label); else softFailures.push(label);
+      };
+      const act = async fn => { try { await fn(); } catch (_) { /* the outcome is checked next */ } };
+      const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+      const until = async (fn, ms = 2500) => {
+        const end = performance.now() + ms;
+        for (;;) {
+          let ok = false;
+          try { ok = Boolean(fn()); } catch (_) { ok = false; }
+          if (ok) return true;
+          if (performance.now() > end) return false;
+          await wait(10);
+        }
+      };
+      const settleUi = async () => { for (let i = 0; i < 8; i++) await tick(); };
+      const frame2 = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const typeInto = (el, value) => { el.value = value; el.dispatchEvent(new Event("input", {bubbles: true})); };
+      const press = (key, extra = {}, target = document.activeElement) => {
+        const event = new KeyboardEvent("keydown", {key, bubbles: true, cancelable: true, ...extra});
+        (target || document.body).dispatchEvent(event);
+        return event;
+      };
+      const hover = el => el.dispatchEvent(new PointerEvent("pointerover", {bubbles: true, pointerType: "mouse"}));
+      const leave = el => el.dispatchEvent(new PointerEvent("pointerout", {bubbles: true, pointerType: "mouse", relatedTarget: document.body}));
+      const words = el => (el && el.textContent || "").replace(/\s+/g, " ").trim();
+      const shown = el => Boolean(el) && !el.closest("[hidden]") && el.getClientRects().length > 0 && getComputedStyle(el).display !== "none";
+      const live = () => [...document.querySelectorAll("#toastPanel .toast-item:not(.leaving)")];
+      const liveOf = kind => live().filter(item => item.querySelector(".toast." + kind));
+      const textOf = item => (item && item.querySelector(".toast p") || {}).textContent || "";
+      const clearToasts = () => {
+        try { if (busyToast) dismissToast(busyToast); } catch (_) { /* older code */ }
+        for (const item of [...document.querySelectorAll("#toastPanel .toast-item")]) {
+          try { dismissToast(item); } catch (_) { /* older code */ }
+          item.remove();
+        }
+      };
+      const rectOf = el => el.getBoundingClientRect();
+      // The part of a target inside the window (the spotlight stays 4 px inside it).
+      const clip = r => ({left: Math.max(4, r.left), top: Math.max(4, r.top), right: Math.min(document.documentElement.clientWidth - 4, r.right), bottom: Math.min(innerHeight - 4, r.bottom)});
+      const inside = (inner, outer, slack = 3) => inner.left >= outer.left - slack && inner.top >= outer.top - slack && inner.right <= outer.right + slack && inner.bottom <= outer.bottom + slack;
+      const overlaps = (a, b) => a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1;
+      const inView = (r, width = innerWidth, height = innerHeight) => r.left >= 0 && r.top >= 0 && r.right <= width && r.bottom <= height && r.width > 0;
+      const provider = (id, label, extra = {}) => ({id, label, configured: false, enabled: true, state: "off", retry_in: 0, key_hint: "", checked: "", ...extra});
+      const noneSetUp = {ready: false, retry_in: 0, providers: [provider("freellmapi", "FreeLLMAPI"), provider("gemini", "Google Gemini"), provider("groq", "Groq"), provider("openrouter", "OpenRouter")]};
+      const geminiReady = {ready: true, retry_in: 0, providers: [provider("freellmapi", "FreeLLMAPI"), provider("gemini", "Google Gemini", {configured: true, state: "ready", key_hint: "a1B2", checked: "ok"}),
+        provider("groq", "Groq"), provider("openrouter", "OpenRouter")]};
+      const resting = {ready: false, retry_in: 40, providers: [provider("freellmapi", "FreeLLMAPI"), provider("gemini", "Google Gemini", {configured: true, state: "rate_limited", retry_in: 40, key_hint: "a1B2"}),
+        provider("groq", "Groq"), provider("openrouter", "OpenRouter")]};
+      const GUIDE_RECORD = "marteloio.guide.v1";
+      const record = () => { try { return JSON.parse(localStorage.getItem(GUIDE_RECORD) || "null") || {}; } catch (_) { return {}; } };
+      // A fresh first run ({}), or any other record; the app reads it again at once.
+      const setRecord = value => { localStorage.setItem(GUIDE_RECORD, JSON.stringify(value)); try { loadGuide(); renderGuide(); } catch (_) { /* older code */ } };
+      const setStatus = status => { aiStatus = status; try { applyAiStatus(status); } catch (_) { /* older code */ } };
+      const tips = () => ListingCore.GUIDE_TIPS;
+      const savedStatus = aiStatus, savedDetect = detectReply, savedSettings = settingsReply, savedTheme = document.documentElement.dataset.theme;
+      const savedSeller = Object.fromEntries(["storeName", "memberYear", "fbPct"].map(id => [id, $(id).value]));
+      const savedPrefs = Object.fromEntries([["eb.store", null], ["eb.memberYear", null], ["eb.fbPct", null]].map(([key]) => [key, localStorage.getItem(key)]));
+      let savedTimes = null;
+      try { savedTimes = {...GUIDE_TIMES}; } catch (_) { /* older code */ }
+      const motionDescriptor = Object.getOwnPropertyDescriptor(motionMedia, "matches");
+      const setMotion = reduced => Object.defineProperty(motionMedia, "matches", {configurable: true, value: reduced});
+      const clipboard = navigator.clipboard, realWrite = clipboard && clipboard.writeText;
+      if (clipboard) clipboard.writeText = async () => {};
+      const frames = [];
+      // Spotlight and card measured where they end up, not mid-slide.
+      const still = document.createElement("style");
+      still.textContent = ".tour-spot, .tour-card { transition: none !important; }";
+      document.head.append(still);
+      pending.splice(0);
+      // A copy of the app, loaded fresh in a frame (see ?app-only at the top), after its first AI status answer.
+      const loadApp = async (query, width = 1366, height = 768) => {
+        const frame = document.createElement("iframe");
+        frame.style.cssText = "position:fixed;left:-20000px;top:0;border:0;width:" + width + "px;height:" + height + "px";
+        const loaded = new Promise(resolve => { frame.onload = resolve; });
+        frame.src = "/?app-only&" + query;
+        document.body.append(frame);
+        frames.push(frame);
+        await loaded;
+        const doc = frame.contentDocument;
+        // Measured where things end up, not mid-animation.
+        const settled = doc.createElement("style");
+        settled.textContent = "*, *::before, *::after { animation: none !important; transition: none !important; }";
+        doc.head.append(settled);
+        await until(() => doc.getElementById("statusText").textContent !== "Checking AI…", 4000);
+        await wait(80);
+        return {frame, win: frame.contentWindow, doc, $: id => doc.getElementById(id), fixture: frame.contentWindow.__fixture};
+      };
+      const memoryRecord = app => { try { return JSON.parse(app.fixture.memory.get(GUIDE_RECORD) || "{}"); } catch (_) { return {}; } };
+      try {
+        await act(() => { closeSettings(); newListing(); });
+        clearToasts();
+
+        /* -- On load: the welcome for a fresh first run, the tour Notice for an upgrade -- */
+        let fresh = null;
+        await act(async () => {
+          const app = await loadApp("ai=none");
+          const active = app.doc.activeElement;
+          fresh = {open: !app.$("welcomeOverlay").hidden && app.$("welcome").getAttribute("role") === "dialog" && app.$("welcome").getAttribute("aria-modal") === "true",
+            step: !app.$("welcomeStep0").hidden && app.$("welcomeStep1").hidden && app.$("welcomeStep2").hidden,
+            focus: Boolean(active) && active.tagName === "INPUT" && app.$("welcomePasteMount").contains(active),
+            course: [...app.$("welcomeCourse").children].map(li => li.className).join(), current: app.$("welcomeCourse").children[0].getAttribute("aria-current"),
+            pill: [app.$("statusText").textContent, app.$("aiStatus").tagName, app.$("aiStatus").classList.contains("is-setup")].join("|"),
+            errors: app.fixture.errors.length};
+        });
+        lc(() => fresh.open && fresh.step && fresh.focus && fresh.course === "is-now,," && fresh.current === "step" && fresh.errors === 0,
+          "First run: with no AI service connected, the welcome opens on load at Connect AI with the paste box focused");
+        lc(() => fresh.pill === "Set up AI|BUTTON|true", "First run: the header AI button is a button that says Set up AI");
+        let upgrade = null;
+        await act(async () => {
+          const app = await loadApp("drafts=2");
+          const notice = [...app.doc.querySelectorAll("#toastPanel .toast-item:not(.leaving)")].find(item => item.querySelector(".toast.note"));
+          upgrade = {welcome: app.$("welcomeOverlay").hidden, saved: memoryRecord(app),
+            notice: notice ? notice.querySelector("p").textContent + "|" + notice.querySelector(".toast-action").textContent : "",
+            emptyState: app.$("setupGuide").hidden && getComputedStyle(app.$("emptyState")).display !== "none"};
+          notice.querySelector(".toast-action").click();
+          await wait(60);
+          upgrade.tour = !app.$("tour").hidden && app.$("tourTitle").textContent === "Start here";
+        });
+        lc(() => upgrade.welcome && upgrade.notice === "New: a one-minute tour of Marteloio.|Take the tour" && upgrade.saved.welcome === "skipped" && upgrade.saved.tourNotice === true,
+          "An upgrade with AI already connected never sees the welcome; a Notice offers the one-minute tour, once");
+        lc(() => upgrade.emptyState && upgrade.saved.checklist === "hidden", "An upgrade with Recent drafts doesn't get the Get set up guide");
+        lc(() => upgrade.tour, "The Notice's Take the tour starts the tour");
+        let noDrafts = null;
+        await act(async () => {
+          const app = await loadApp("theme=light");
+          noDrafts = {welcome: app.$("welcomeOverlay").hidden, guide: !app.$("setupGuide").hidden && app.$("outputCard").classList.contains("guide-full"),
+            steps: [...app.$("setupSteps").children].map(li => li.className.trim()).join()};
+        });
+        lc(() => noDrafts.welcome && noDrafts.guide && noDrafts.steps === "is-done,is-now,,",
+          "AI connected but no Recent drafts: Get set up shows in place of the empty state, with Connect AI already ticked");
+        let tourTaken = null;
+        await act(async () => {
+          const app = await loadApp("guide=" + encodeURIComponent(JSON.stringify({tour: "skipped"})));
+          tourTaken = {notes: app.doc.querySelectorAll("#toastPanel .toast-item:not(.leaving) .toast.note").length, saved: memoryRecord(app), welcome: app.$("welcomeOverlay").hidden};
+        });
+        lc(() => tourTaken.notes === 0 && tourTaken.welcome && tourTaken.saved.welcome === "skipped" && tourTaken.saved.tour === "skipped" && !tourTaken.saved.tourNotice,
+          "The tour Notice only shows if the tour was never taken or skipped");
+        let skipped = null;
+        await act(async () => {
+          const app = await loadApp("ai=none&guide=" + encodeURIComponent(JSON.stringify({welcome: "skipped"})));
+          skipped = {welcome: app.$("welcomeOverlay").hidden, pill: app.$("statusText").textContent};
+          app.$("aiStatus").click();
+          await until(() => app.$("settingsOverlay").classList.contains("open"));
+          await wait(30);
+          skipped.settings = app.$("settingsOverlay").classList.contains("open") && app.$("settingsTab-ai").getAttribute("aria-selected") === "true" &&
+            app.doc.activeElement === app.$("aiPasteMount").querySelector("input");
+        });
+        lc(() => skipped.welcome && skipped.pill === "Set up AI" && skipped.settings,
+          "A welcome skipped before stays closed; then Set up AI opens Settings › AI with the paste box ready");
+        let blocked = null;
+        await act(async () => {
+          const app = await loadApp("ai=none&storage=throws");
+          blocked = {open: !app.$("welcomeOverlay").hidden};
+          app.$("welcomeSkip").click();
+          await wait(20);
+          blocked.closed = app.$("welcomeOverlay").hidden && app.win.guideInfo().welcome === "skipped";
+          app.win.startAiSetup();
+          await until(() => app.$("settingsOverlay").classList.contains("open"));
+          blocked.routed = app.$("welcomeOverlay").hidden && app.$("settingsOverlay").classList.contains("open");
+          blocked.errors = app.fixture.errors.length + app.doc.querySelectorAll("#toastPanel .toast.err").length;
+        });
+        lc(() => blocked.open && blocked.closed && blocked.routed && blocked.errors === 0,
+          "With storage blocked the first run still works: the welcome opens, Skip setup holds for this visit, and nothing fails");
+        let phone = null;
+        await act(async () => {
+          const app = await loadApp("ai=none", 390, 844);
+          const box = app.$("welcome").getBoundingClientRect(), ways = [...app.$("welcomeCourse").children].map(li => li.getBoundingClientRect());
+          phone = {sheet: Math.round(box.width) === 390 && Math.round(box.height) === 844 && box.left === 0 && box.top === 0,
+            row: ways.every(r => Math.abs(r.top - ways[0].top) < 4) && ways[2].left > ways[1].left && ways[1].left > ways[0].left &&
+              app.doc.defaultView.getComputedStyle(app.doc.querySelector("#welcomeCourse .way-short")).display !== "none",
+            keyboardDown: app.doc.activeElement === app.$("welcomeTitle"), wide: app.doc.documentElement.scrollWidth <= 390,
+            words: app.$("statusText").textContent === "Set up AI" && app.$("statusText").getBoundingClientRect().width > 40 &&
+              app.doc.defaultView.getComputedStyle(app.$("statusText")).position !== "absolute"};
+          app.$("welcomeSkip").click();
+          await wait(30);
+          const guideBox = app.$("setupGuide").getBoundingClientRect();
+          phone.guide = !app.$("setupGuide").hidden && guideBox.left >= 0 && guideBox.right <= 390 && app.doc.documentElement.scrollWidth <= 390 &&
+            app.$("setupSteps").children[1].querySelector(".setup-text").innerText.startsWith("Start with the product name above,");
+          // A field tip is full width on a phone.
+          const tipButton = app.doc.querySelector('[data-field-tip="condition"]');
+          tipButton.click();
+          const pop = app.$(tipButton.getAttribute("aria-controls")).getBoundingClientRect();
+          phone.tip = Math.round(pop.width) === 390 - 24 && Math.round(pop.left) === 12 && pop.top >= 0 && pop.bottom <= 844;
+          app.doc.dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true}));
+          // The tour card is a sheet at the bottom, and goes to the top for the fixed Generate bar.
+          app.win.startTour();
+          await wait(40);
+          const card = app.$("tourCard").getBoundingClientRect(), spot = app.$("tourSpot").getBoundingClientRect();
+          phone.sheet1 = Math.round(card.bottom) === 844 && Math.round(card.width) === 390 && card.left === 0 && spot.bottom <= card.top + 1 && app.$("tourCard").dataset.side === "sheet-bottom";
+          for (let i = 0; i < 3; i++) app.$("tourNext").click();
+          await wait(40);
+          const top = app.$("tourCard").getBoundingClientRect(), gen = app.$("tourSpot").getBoundingClientRect();
+          phone.sheet4 = app.$("tourTitle").textContent === "Generate listing" && Math.round(top.top) === 0 && gen.top >= top.bottom - 1 && app.$("tourCard").dataset.side === "sheet-top";
+          phone.errors = app.fixture.errors.length;
+        });
+        lc(() => phone.sheet && phone.row && phone.keyboardDown && phone.wide && phone.errors === 0,
+          "At 390px the welcome is a full-screen sheet with the course across the top, and the keyboard stays down");
+        lc(() => phone.words, "On a phone the AI button shows its words (Set up AI), not just a dot");
+        lc(() => phone.guide, "At 390px Get set up fits the screen (and says the product name is above)");
+        lc(() => phone.tip, "On a phone a field tip is full width");
+        lc(() => phone.sheet1 && phone.sheet4, "On a phone the tour card is a sheet at the bottom, and at the top for the Generate bar");
+        for (const frame of frames.splice(0)) frame.remove();
+
+        /* -- Welcome: Connect AI, Your shop, Quick tour -- */
+        await act(() => { setStatus(noneSetUp); setRecord({}); newListing(); clearToasts(); });
+        let welcome = null;
+        await act(async () => {
+          openWelcome();
+          await settleUi();
+          const link = $("welcomeKeySteps").querySelector("a");
+          welcome = {head: words($("welcomeTitle")) + "|" + words($("welcomeLead")),
+            course: [...$("welcomeCourse").children].map(li => words(li.querySelector(".way-long") || li.querySelector(".way-name")) + "/" + words(li.querySelector("small"))).join("|"),
+            step: words($("welcomeStep0Title")) + "|" + words($("welcomeStep0").querySelector("p")),
+            hint: words($("welcomePasteMount").querySelector(".key-paste-hint")),
+            paste: welcomePaste.button.textContent + "|" + welcomePaste.button.classList.contains("btn-primary") + "|" + welcomePaste.input.placeholder,
+            getKey: words($("welcomeGetKeyTitle")), steps: [...$("welcomeKeySteps").children].map(words),
+            link: [link.href, link.target, /\bnoopener\b/.test(link.rel)].join("|"),
+            foot: [words($("welcomeKeysNote")), words($("welcomeSkip")), words($("welcomeNext"))].join("|"),
+            x: $("welcomeX").getAttribute("aria-label"), focus: document.activeElement === welcomePaste.input};
+        });
+        lc(() => welcome.head === "Welcome to Marteloio|Three short steps, then you're ready to write your first listing." &&
+          welcome.course === "Connect AI/A free key, pasted once|Your shop/Optional|Quick tour/Six stops, one minute" && welcome.focus && welcome.x === "Close",
+          "Welcome: the header and the course (Connect AI, Your shop, Quick tour), with × named Close");
+        lc(() => welcome.step === "Connect a free AI service|Marteloio asks an AI service to write your listing. Paste a key and Marteloio works out which service it is and checks that it works." &&
+          welcome.hint === "Works with keys from Google Gemini, Groq, OpenRouter and FreeLLMAPI." && welcome.paste === "Paste|true|Paste your key here",
+          "Welcome step 1: Connect a free AI service, with one paste box");
+        lc(() => welcome.getKey === "No key yet? Get a free Google key in about 2 minutes" && welcome.steps.length === 4 &&
+          welcome.steps[0].startsWith("Open Google AI Studio") && welcome.steps[1] === "Sign in with your Google account and accept the terms if asked." &&
+          welcome.steps[2] === "Choose Create API key (or copy the key that's already listed)." && welcome.steps[3] === "Come back here and paste it above." &&
+          welcome.link === "https://aistudio.google.com/app/apikey|_blank|true", "Welcome step 1: No key yet? Four steps to a free Google key, opening Google AI Studio in a new tab");
+        lc(() => welcome.foot === "Keys stay on this computer, encrypted for your Windows account.|Skip setup|Continue", "Welcome: the footer says where keys stay, with Skip setup and Continue");
+        let pasted = null;
+        await act(async () => {
+          const data = new DataTransfer();
+          data.setData("text/plain", "AIzaSyFixtureWelcomeKey0123456789a1B2");
+          welcomePaste.input.dispatchEvent(new ClipboardEvent("paste", {clipboardData: data, bubbles: true, cancelable: true}));
+          const request = await nextRequest();
+          const body = JSON.parse(request.opts.body);
+          aiStatus = geminiReady;
+          request.resolve(reply({saved: true, provider: "gemini", label: "Google Gemini", test: {ok: true, ms: 1180, model: "gemini-flash-latest"}, status: geminiReady}));
+          await until(() => welcomePaste.result.classList.contains("is-ok"));
+          pasted = {path: request.path, provider: body.provider, result: words(welcomePaste.result), next: $("welcomeNext").classList.contains("btn-primary"),
+            ghost: welcomePaste.button.classList.contains("btn-ghost") && !welcomePaste.button.classList.contains("btn-primary"), pill: $("statusText").textContent,
+            course: $("welcomeCourse").children[0].className, shown: !document.body.innerHTML.includes("FixtureWelcomeKey")};
+        });
+        lc(() => pasted.path === "/settings/ai" && pasted.provider === "auto" && pasted.result === "Google Gemini is connected · it answered in 1.2 seconds" &&
+          pasted.next && pasted.ghost && pasted.pill === "AI ready" && pasted.course === "is-now" && pasted.shown,
+          "Welcome: a pasted key is saved and tested (Google Gemini is connected · it answered in 1.2 seconds) and Continue becomes the main button");
+        let shop = null;
+        await act(async () => {
+          $("welcomeNext").click();
+          await settleUi();
+          shop = {step: !$("welcomeStep1").hidden && $("welcomeStep0").hidden, focus: document.activeElement === $("welcomeStep1Title"),
+            course: [...$("welcomeCourse").children].map(li => li.className).join(), labels: [...$("welcomeStep1").querySelectorAll("label")].map(words).join("|"),
+            lead: words($("welcomeStep1").querySelector("p")), noNote: $("welcomeNoAi").hidden, skip: words($("welcomeShopSkip"))};
+          const year = new Date().getFullYear(), storeBefore = $("storeName").value, savedStore = localStorage.getItem("eb.store");
+          typeInto($("welcomeStoreName"), "Fixture Welcome Store"); $("welcomeStoreName").dispatchEvent(new Event("change"));
+          typeInto($("welcomeMemberYear"), "15");
+          typeInto($("welcomeFbPct"), "150");
+          // The hints Settings › Your shop shows for the same wrong values.
+          shop.hints = !$("welcomeMemberYearError").hidden && words($("welcomeMemberYearError")) === "Member since: use the 4-digit year you joined eBay, from 1995 to " + year + ". Until then it's left out of the listing." &&
+            !$("welcomeFbPctError").hidden && words($("welcomeFbPctError")) === "Positive %: use a number from 0 to 100, like 99.6. Until then it's left out of the listing." &&
+            $("welcomeMemberYear").getAttribute("aria-invalid") === "true";
+          // Nothing is saved while typing, and Continue with a wrong value stays, at that box.
+          shop.notWhileTyping = $("storeName").value === storeBefore && localStorage.getItem("eb.store") === savedStore;
+          $("welcomeNext").click();
+          await settleUi();
+          shop.stayed = !$("welcomeStep1").hidden && document.activeElement === $("welcomeMemberYear") && $("storeName").value === storeBefore &&
+            localStorage.getItem("eb.store") === savedStore && localStorage.getItem("eb.memberYear") !== "15";
+          typeInto($("welcomeMemberYear"), "2014");
+          typeInto($("welcomeFbPct"), "99.6");
+          $("welcomeNext").click();
+          await settleUi();
+          shop.saved = localStorage.getItem("eb.store") === "Fixture Welcome Store" && $("storeName").value === "Fixture Welcome Store" && $("memberYear").value === "2014" &&
+            localStorage.getItem("eb.memberYear") === "2014" && localStorage.getItem("eb.fbPct") === "99.6" && $("welcomeMemberYearError").hidden && $("welcomeFbPctError").hidden &&
+            !$("welcomeStep2").hidden;
+          showWelcomeStep(1);
+        });
+        lc(() => shop.step && shop.focus && shop.course === "is-done,is-now," && shop.labels === "Store or seller name|Member since|Positive %" &&
+          shop.lead.startsWith("Optional.") && shop.noNote && shop.skip === "Skip this step",
+          "Welcome: Continue goes to Your shop (optional): store name, member since and positive %, with Skip this step");
+        lc(() => shop.hints && shop.notWhileTyping && shop.stayed && shop.saved,
+          "Welcome: Your shop has the hints of Settings › Your shop; nothing is saved while typing, and Continue saves the boxes once each one is right");
+        let tourStep = null;
+        await act(async () => {
+          $("welcomeShopSkip").click();
+          await settleUi();
+          tourStep = {step: !$("welcomeStep2").hidden && $("welcomeStep1").hidden && document.activeElement === $("welcomeStep2Title"),
+            buttons: words($("welcomeTourStart")) + "|" + words($("welcomeTourLater")), foot: $("welcomeNext").hidden && $("welcomeSkip").hidden,
+            course: [...$("welcomeCourse").children].map(li => li.className).join(), text: words($("welcomeStep2").querySelector("p"))};
+          $("welcomeTourLater").click();
+          await settleUi();
+          tourStep.closed = !welcomeOpen() && record().welcome === "done" && document.activeElement === $("productSearch") && $("tour").hidden;
+        });
+        lc(() => tourStep.step && tourStep.buttons === "Start the tour|Not now" && tourStep.foot && tourStep.course === "is-done,is-done,is-now" &&
+          tourStep.text === "A one-minute tour of the real screen, in six stops: where to type, what Generate listing does and how to copy the listing into eBay.",
+          "Welcome: Skip this step moves on to Quick tour, with Start the tour and Not now");
+        lc(() => tourStep.closed, "Welcome: Not now finishes the setup (remembered as done) and focus goes to the product name");
+        let fromWelcome = null;
+        await act(async () => {
+          setRecord({});
+          openWelcome(2);
+          $("welcomeTourStart").click();
+          await settleUi();
+          fromWelcome = !welcomeOpen() && record().welcome === "done" && tourActive() && $("tourTitle").textContent === "Start here";
+          endTour("skipped");
+        });
+        lc(() => fromWelcome, "Welcome: Start the tour finishes the setup and starts the tour");
+        let withoutKey = null;
+        await act(async () => {
+          setStatus(noneSetUp); setRecord({});
+          openWelcome();
+          $("welcomeNext").click();
+          await settleUi();
+          withoutKey = {moved: !$("welcomeStep1").hidden, note: $("welcomeNoAi").hidden ? "" : words($("welcomeNoAi")),
+            first: $("welcomeCourse").children[0].className, primary: $("welcomeNext").classList.contains("btn-primary")};
+          $("welcomeSkip").click();
+        });
+        lc(() => withoutKey.moved && withoutKey.note === "Not connected yet: choose Set up AI at the top of the page when you have a key." && withoutKey.first === "" && !withoutKey.primary,
+          "Welcome: Continue without a key still moves on, with a note that Set up AI connects it later");
+        const closings = [];
+        for (const how of ["skip", "escape", "x"]) {
+          await act(async () => {
+            setRecord({});
+            openWelcome();
+            if (how === "skip") $("welcomeSkip").click();
+            else if (how === "x") $("welcomeX").click();
+            else press("Escape", {}, welcomePaste.input);
+            await settleUi();
+            closings.push(!welcomeOpen() && record().welcome === "skipped");
+          });
+        }
+        lc(() => closings.length === 3 && closings.every(Boolean), "Welcome: Skip setup, Esc and × close it, remembered as skipped");
+        let trap = false;
+        await act(async () => {
+          setRecord({});
+          openWelcome();
+          const focusables = [...$("welcome").querySelectorAll("button, input, a[href]")].filter(el => !el.disabled && el.tabIndex >= 0 && el.getClientRects().length && !el.closest("[hidden]"));
+          const first = focusables[0], last = focusables[focusables.length - 1];
+          last.focus(); const forward = press("Tab");
+          const a = forward.defaultPrevented && document.activeElement === first && first === $("welcomeX");
+          press("Tab", {shiftKey: true});
+          const b = document.activeElement === last;
+          $("welcomeTitle").focus(); press("Tab", {shiftKey: true});
+          trap = a && b && document.activeElement === last;
+          $("welcomeSkip").click();
+        });
+        lc(() => trap, "Welcome: keyboard focus stays inside the dialog (Tab and Shift+Tab wrap)");
+        let routing = null;
+        await act(async () => {
+          closeSettings();
+          setRecord({});
+          startAiSetup();
+          await settleUi();
+          routing = {welcome: welcomeOpen() && !$("welcomeStep0").hidden && document.activeElement === welcomePaste.input && !$("settingsOverlay").classList.contains("open")};
+          $("welcomeSkip").click();
+          await startAiSetup();
+          await settleUi();
+          routing.settings = !welcomeOpen() && $("settingsOverlay").classList.contains("open") && settingsTab === "ai" && document.activeElement === keyPaste.input;
+          closeSettings();
+          setRecord({});
+          $("aiStatus").click();
+          await settleUi();
+          routing.pill = welcomeOpen() && !$("welcomeStep0").hidden;
+          $("welcomeSkip").click();
+        });
+        lc(() => routing.welcome && routing.settings && routing.pill,
+          "Set up AI opens the welcome at its first step until it was finished or skipped; after that, Settings › AI with the paste box ready");
+        let foundCard = "", foundUse = false;
+        await act(async () => {
+          setRecord({});
+          detectReply = {found: true, ready: true, base_url: "http://127.0.0.1:31415/v1", reason: ""};
+          openWelcome();
+          await until(() => !$("welcomeFound").hidden);
+          foundCard = words($("welcomeFoundText"));
+          $("welcomeFoundUse").click();
+          foundUse = document.activeElement === welcomePaste.input && words(welcomePaste.result) === "Paste the FreeLLMAPI key here.";
+          detectReply = savedDetect;
+          $("welcomeSkip").click();
+        });
+        lc(() => foundCard === "FreeLLMAPI is running on this computer. To use it, copy its key from the tray icon: Show Compact Panel › Copy Key." && foundUse,
+          "Welcome: when FreeLLMAPI is running here, the same card as Settings offers it, and Use FreeLLMAPI goes to the paste box");
+        let notes = [];
+        for (const answer of [{provider_storage: "plaintext"}, {}]) {
+          await act(async () => {
+            settingsReply = answer;
+            setRecord({});
+            openWelcome();
+            await until(() => (answer.provider_storage ? /\.env/ : /encrypted/).test($("welcomeKeysNote").textContent));
+            notes.push(words($("welcomeKeysNote")));
+            $("welcomeSkip").click();
+          });
+        }
+        settingsReply = savedSettings;
+        lc(() => notes.join("|") === "Keys stay on this computer, in the .env file in the Marteloio folder.|Keys stay on this computer, encrypted for your Windows account.",
+          "Welcome: the footer says how keys are kept, as Settings does (encrypted on Windows, the .env file elsewhere)");
+
+        /* -- Tour: six coach marks on the real screen -- */
+        const TARGETS = [() => [$("productSearch").closest(".lookup-section").querySelector(".field-head"), document.querySelector("#lookupSection .lookup-row"), $("lookupHint")],
+          () => [$("notes"), document.querySelector('label[for="notes"]')], () => [$("condition"), document.querySelector('label[for="condition"]')], () => [$("generateBtn")],
+          () => [document.querySelector("#outputCard .title-box"), $("previewShell")], () => [$("copyHtmlBtn")]];
+        let tourOpen = null;
+        const stops = [];
+        let snapshotBefore = "", snapshotAfter = "", pendingBefore = 0;
+        await act(async () => {
+          setMotion(true);
+          setStatus(geminiReady);
+          setRecord({});
+          newListing(); clearToasts();
+          typeInto($("productSearch"), "Tour fixture camera");
+          snapshotBefore = JSON.stringify({...snapshotDraft(), savedAt: ""});
+          pendingBefore = pending.length;
+          const guideBefore = !$("setupGuide").hidden && $("outputCard").classList.contains("guide-full");
+          $("helpBtn").focus();
+          startTour();
+          await settleUi();
+          tourOpen = {visible: !$("tour").hidden, focus: document.activeElement === $("tourCard"), dialog: $("tourCard").getAttribute("role") === "dialog" && $("tourCard").getAttribute("aria-modal") === "true",
+            aside: guideBefore && $("setupGuide").hidden && !$("outputCard").classList.contains("guide-full") && shown(document.querySelector("#outputCard .title-box"))};
+          for (let i = 0; i < 6; i++) {
+            await frame2();
+            const spot = rectOf($("tourSpot")), card = rectOf($("tourCard"));
+            stops.push({title: $("tourTitle").textContent, text: $("tourText").textContent, count: $("tourCount").textContent, back: !$("tourBack").hidden,
+              next: $("tourNext").textContent, covered: TARGETS[i]().every(el => inside(clip(rectOf(el)), spot)), apart: !overlaps(card, spot), inView: inView(card, document.documentElement.clientWidth),
+              dots: [...$("tourProgress").querySelectorAll("i")].map(dot => dot.classList.contains("on") ? 1 : 0).join("")});
+            if (i < 5) $("tourNext").click();
+          }
+        });
+        lc(() => tourOpen.visible && tourOpen.focus && tourOpen.dialog && tourOpen.aside,
+          "Tour: it starts on the real screen with focus in its card, and Get set up steps aside so it can point at the real controls");
+        lc(() => stops.length === 6 && stops.map(stop => stop.title).join("|") === "Start here|Describe the item|Condition|Generate listing|Review|Copy into eBay" &&
+          stops.every((stop, i) => stop.text === ListingCore.TOUR_STOPS[i].text && stop.count === (i + 1) + " of 6" && stop.dots === "1".repeat(i + 1) + "0".repeat(5 - i)) &&
+          stops[0].text === "Type what you're selling, like “Canon AE-1 camera”. Look up and Find keywords next to it are optional.",
+          "Tour: six stops with the approved words, progress dots and 1 of 6 to 6 of 6");
+        lc(() => stops.length === 6 && stops.every(stop => stop.covered),
+          "Tour: each spotlight surrounds its target: the product name with Look up and Find keywords, Describe the item, Condition, Generate listing, the title and preview, Copy HTML");
+        lc(() => stops.length === 6 && stops.every(stop => stop.apart && stop.inView), "Tour: the card sits beside the spotlight, inside the window");
+        lc(() => stops.length === 6 && !stops[0].back && stops.slice(1).every(stop => stop.back) && stops[5].next === "Done" && stops.slice(0, 5).every(stop => stop.next === "Next"),
+          "Tour: Back from the second stop on, Next, and Done on the last");
+        let finished = null;
+        await act(async () => {
+          $("tourNext").click();
+          await settleUi();
+          snapshotAfter = JSON.stringify({...snapshotDraft(), savedAt: ""});
+          finished = {closed: $("tour").hidden, done: record().tour === "done", focus: document.activeElement === $("helpBtn"),
+            guideBack: !$("setupGuide").hidden, unchanged: snapshotAfter === snapshotBefore && pending.length === pendingBefore};
+        });
+        lc(() => finished.closed && finished.done && finished.focus && finished.guideBack, "Tour: Done finishes it (remembered as done), focus goes back to where it started and Get set up returns");
+        lc(() => finished.unchanged && snapshotBefore.includes("Tour fixture camera"), "Tour: it never changes the draft");
+        let keys = null;
+        await act(async () => {
+          setRecord({});
+          $("productSearch").focus();
+          startTour();
+          await settleUi();
+          const card = $("tourCard");
+          press("ArrowRight", {}, card); const a = $("tourTitle").textContent === "Describe the item";
+          press("ArrowLeft", {}, card); const b = $("tourTitle").textContent === "Start here";
+          press("Enter", {}, card); const c = $("tourTitle").textContent === "Describe the item";
+          $("tourNext").focus(); press("Tab", {}, $("tourNext")); const wrap = document.activeElement === $("tourBack");
+          press("Escape", {}, document.activeElement);
+          await settleUi();
+          keys = {a, b, c, wrap, closed: $("tour").hidden, skipped: record().tour === "skipped", focus: document.activeElement === $("productSearch")};
+        });
+        lc(() => keys.a && keys.b && keys.c && keys.wrap, "Tour: → and Enter go on, ← goes back, and Tab stays in the card");
+        lc(() => keys.closed && keys.skipped && keys.focus, "Tour: Esc skips it (remembered as skipped) and focus goes back");
+        let follows = null;
+        await act(async () => {
+          window.scrollTo(0, 0);
+          startTour();
+          $("tourNext").click(); $("tourNext").click();
+          await frame2();
+          const before = rectOf($("tourSpot")).top, y = window.scrollY;
+          window.scrollBy(0, y > 60 ? -40 : 40);
+          await frame2(); await frame2();
+          const moved = window.scrollY - y, after = rectOf($("tourSpot")).top;
+          window.dispatchEvent(new Event("resize"));
+          await frame2(); await frame2();
+          follows = moved !== 0 && Math.abs(before - after - moved) <= 2 && inside(clip(rectOf($("condition"))), rectOf($("tourSpot")));
+          endTour("skipped");
+          window.scrollTo(0, 0);
+        });
+        lc(() => follows, "Tour: the spotlight follows its target when the page scrolls or the window resizes");
+        let motion = null;
+        await act(async () => {
+          const calls = [], realScroll = Element.prototype.scrollIntoView;
+          Element.prototype.scrollIntoView = function(options) { calls.push(options && options.behavior); return realScroll.call(this, {...(options || {}), behavior: "auto"}); };
+          try {
+            for (const reduced of [false, true]) { setMotion(reduced); startTour(); $("tourNext").click(); $("tourNext").click(); endTour("skipped"); }
+          } finally { Element.prototype.scrollIntoView = realScroll; setMotion(true); }
+          const rule = [...document.querySelector("style").sheet.cssRules].some(r => r instanceof CSSMediaRule && /prefers-reduced-motion:\s*reduce/.test(r.conditionText) &&
+            [...r.cssRules].some(inner => /\.tour-spot/.test(inner.selectorText || "") && /\.tour-card/.test(inner.selectorText || "") && /none/.test(inner.style.transition || inner.style.transitionProperty || "")));
+          motion = {smooth: calls.includes("smooth"), still: calls.slice(Math.floor(calls.length / 2)).every(behavior => behavior === "auto") && calls.length >= 4, rule};
+        });
+        lc(() => motion.smooth && motion.still && motion.rule, "Tour: it scrolls each stop into view, smoothly unless reduced motion is on (then nothing slides)");
+
+        /* -- Get set up: in place of the empty state until the first copy -- */
+        let guideView = null;
+        await act(async () => {
+          setStatus(noneSetUp); setRecord({}); newListing(); clearToasts();
+          await settleUi();
+          const steps = [...$("setupSteps").children];
+          guideView = {shown: shown($("setupGuide")) && $("outputCard").classList.contains("guide-full") && !shown(document.querySelector("#outputCard .title-box")) &&
+              !shown($("emptyState")) && !shown($("copyHtmlBtn")) && shown(document.querySelector(".out-head")),
+            head: words($("setupGuideTitle")) + "|" + words($("setupGuide").querySelector(".setup-sub")),
+            titles: steps.map(li => words(li.querySelector("b"))).join("|"),
+            texts: steps.slice(1).map(li => li.querySelector(".setup-text").innerText.replace(/\s+/g, " ").trim()),
+            first: words($("setupAiText")), classes: steps.map(li => li.className.trim()).join(), current: steps[0].getAttribute("aria-current"),
+            paste: shown(setupPaste.input) && setupPaste.button.textContent === "Paste",
+            foot: words($("setupSample")) + "|" + words($("setupHide"))};
+        });
+        lc(() => guideView.shown && guideView.head === "Get set up|Four steps to your first listing. This guide hides itself when you're done." &&
+          guideView.titles === "Connect a free AI service|Describe your first item|Generate the listing|Copy it into eBay" &&
+          guideView.texts.join("|") === "Start with the product name on the left, then say what works and what doesn't.|Takes 10–30 seconds. Check every detail it writes.|Switch eBay's description box to HTML (the < > button), then paste." &&
+          guideView.foot === "Try a sample item|Hide this guide", "Get set up: four steps in place of the empty state, with Try a sample item and Hide this guide");
+        lc(() => guideView.classes === "is-now,,," && guideView.current === "step" && guideView.paste &&
+          guideView.first === "Paste a key from Google Gemini, Groq, OpenRouter or FreeLLMAPI. No key yet? Get a free Google key (about 2 minutes).",
+          "Get set up: Connect a free AI service is the current step, with the paste box inline while nothing is connected");
+        let getKey = null;
+        await act(async () => {
+          const before = $("setupKeySteps").hidden;
+          $("setupGetKey").click();
+          getKey = {before, opened: !$("setupKeySteps").hidden && $("setupGetKey").getAttribute("aria-expanded") === "true" && $("setupGetKey").getAttribute("aria-controls") === "setupKeySteps",
+            steps: [...$("setupKeySteps").children].map(words), link: $("setupKeySteps").querySelector("a").href};
+          $("setupGetKey").click();
+          getKey.closed = $("setupKeySteps").hidden;
+        });
+        lc(() => getKey.before && getKey.opened && getKey.closed && getKey.steps.length === 4 && getKey.steps[3] === "Come back here and paste it above." &&
+          getKey.link === "https://aistudio.google.com/app/apikey", "Get set up: No key yet? Get a free Google key opens the same four steps as the welcome");
+        let ticks = null;
+        await act(async () => {
+          const save = setupPaste.save("AIzaSyFixtureGuideKey0123456789abcd");
+          const request = await nextRequest();
+          aiStatus = geminiReady;
+          request.resolve(reply({saved: true, provider: "gemini", label: "Google Gemini", test: {ok: true, ms: 1200, model: "gemini-flash-latest"}, status: geminiReady}));
+          await save;
+          await settleUi();
+          const steps = () => [...$("setupSteps").children].map(li => li.className.trim()).join();
+          ticks = {connected: steps(), done: words($("setupAiDone")), pasteGone: !shown(setupPaste.input)};
+          typeInto($("productSearch"), "Canon AE-1");
+          typeInto($("notes"), "Guide fixture camera. Shutter works, light meter dead.");
+          ticks.described = steps();
+          const run = generate(); const request2 = await nextRequest();
+          ticks.generating = steps();
+          complete(request2, listing("Guide fixture listing")); await run;
+          await settleUi();
+          ticks.strip = shown($("setupStrip")) ? words($("setupStrip")) : "";
+          ticks.full = !shown($("setupGuide")) && !$("outputCard").classList.contains("guide-full") && shown(document.querySelector("#outputCard .title-box"));
+          ticks.generated = record().generated === true;
+        });
+        lc(() => ticks.connected === "is-done,is-now,," && ticks.done === "Google Gemini is connected · it answered in 1.2 seconds." && ticks.pasteGone,
+          "Get set up: a key pasted in the guide ticks Connect AI, and says which service answered");
+        lc(() => ticks.described === "is-done,is-done,is-now,", "Get set up: describing the item ticks Describe your first item");
+        lc(() => ticks.strip === "Last step: copy it into eBay. Switch eBay's description box to HTML (the < > button), then paste. Hide" && ticks.full && ticks.generated,
+          "Get set up: after the first listing only one line stays: Last step: copy it into eBay…, with Hide");
+        let firstCopy = null;
+        await act(async () => {
+          clearToasts();
+          $("copyHtmlBtn").click();
+          await settleUi();
+          const notice = liveOf("note").map(textOf), done = liveOf("ok").map(textOf);
+          firstCopy = {gone: !shown($("setupStrip")) && !shown($("setupGuide")), saved: record().copied === true && (record().tipsShown || []).includes("copyHtml"),
+            tip: notice.includes("In eBay's listing form, switch the description box to HTML (the < > button), paste, then check the preview."),
+            done: done.includes("You're set up. Find the tour and this guide again under Help (?).")};
+          clearToasts();
+          $("copyHtmlBtn").click();
+          await settleUi();
+          firstCopy.once = !liveOf("note").length && !liveOf("ok").some(item => /set up/.test(textOf(item)));
+        });
+        lc(() => firstCopy.gone && firstCopy.saved && firstCopy.done, "First copy: the guide hides itself and a Done message says You're set up… under Help (?)");
+        lc(() => firstCopy.tip && firstCopy.once, "First copy: the Copy HTML tip shows once as a Notice; a second copy shows neither again");
+        let again = null;
+        await act(async () => {
+          $("helpBtn").click();
+          const item = $("helpGuide");
+          again = {offered: shown(item) && words(item) === "Show the Get set up guide"};
+          item.click();
+          await settleUi();
+          again.shown = shown($("setupGuide")) && document.activeElement === $("setupGuideTitle") && [...$("setupSteps").children].every(li => li.classList.contains("is-done")) &&
+            shown(document.querySelector("#outputCard .title-box")) && record().checklist === "shown";
+        });
+        lc(() => again.offered && again.shown, "Help › Show the Get set up guide brings it back after it hid itself, every step ticked");
+        let hide = null;
+        await act(async () => {
+          clearToasts();
+          $("setupHide").focus();
+          $("setupHide").click();
+          await settleUi();
+          hide = {hidden: !shown($("setupGuide")) && record().checklist === "hidden", notice: liveOf("note").map(textOf).includes("Get set up is hidden. Help (?) at the top of the page shows it again."),
+            focus: document.activeElement !== document.body && shown(document.activeElement)};
+          $("helpBtn").click();
+          hide.offered = shown($("helpGuide"));
+          press("Escape", {}, document.activeElement);
+        });
+        lc(() => hide.hidden && hide.notice && hide.focus && hide.offered, "Hide this guide hides it (remembered), says where to find it again, and keeps focus on the page");
+        let stripHide = null;
+        await act(async () => {
+          setRecord({generated: true});
+          await settleUi();
+          const before = shown($("setupStrip"));
+          $("setupStripHide").click();
+          await settleUi();
+          stripHide = before && !shown($("setupStrip")) && record().checklist === "hidden";
+        });
+        lc(() => stripHide, "The one-line strip's Hide hides the guide too");
+        let sample = null;
+        await act(async () => {
+          setRecord({}); newListing();
+          await settleUi();
+          $("setupSample").click();
+          await settleUi();
+          sample = $("notes").value.startsWith("SAMPLE ITEM") && [...$("setupSteps").children].map(li => li.className.trim()).join() === "is-done,is-done,is-now,";
+        });
+        lc(() => sample, "Get set up: Try a sample item fills the made-up item, and Describe your first item ticks");
+
+        /* -- Field tips: an (i) beside six labels -- */
+        const FIELDS = {product: "productSearch", describe: "notes", included: "includedInput", condition: "condition", conditionNotes: "condNotes", brand: "brand"};
+        const fieldTips = [];
+        await act(async () => {
+          // The guide hidden, so the output column's own buttons are on screen for the tips below.
+          setRecord({welcome: "done", tour: "done", checklist: "hidden", startHereDismissed: true}); newListing(); clearToasts();
+          for (const [key, field] of Object.entries(FIELDS)) {
+            const button = document.querySelector('[data-field-tip="' + key + '"]'), label = document.querySelector('label[for="' + field + '"]');
+            const result = {key, beside: Boolean(button && label) && button.parentElement === label.parentElement && !label.contains(button) && shown(button),
+              button: button.tagName === "BUTTON" && button.type === "button" && button.getAttribute("aria-label") === "Tip: " + tips()[key].title,
+              closed: button.getAttribute("aria-expanded") === "false"};
+            const pop = $(button.getAttribute("aria-controls"));
+            button.focus(); button.click();
+            result.opened = button.getAttribute("aria-expanded") === "true" && shown(pop) && words(pop.querySelector("b")) === tips()[key].title && words(pop.querySelector("span")) === tips()[key].text;
+            result.inView = inView(rectOf(pop), document.documentElement.clientWidth);
+            result.said = $("tipAnnounce").textContent === tips()[key].title + ": " + tips()[key].text;
+            press("Escape", {}, button);
+            result.esc = button.getAttribute("aria-expanded") === "false" && !shown(pop) && document.activeElement === button;
+            button.click();
+            document.body.dispatchEvent(new PointerEvent("pointerdown", {bubbles: true}));
+            result.away = !shown(pop) && button.getAttribute("aria-expanded") === "false";
+            button.focus(); button.click();
+            $("generateBtn").focus();
+            result.tab = !shown(pop) && button.getAttribute("aria-expanded") === "false";
+            fieldTips.push(result);
+          }
+        });
+        lc(() => fieldTips.length === 6 && fieldTips.every(tip => tip.beside && tip.button && tip.closed),
+          "Field tips: an (i) button beside Product name or model, Describe the item, What's included, Condition, Condition notes and Brand");
+        lc(() => fieldTips.length === 6 && fieldTips.every(tip => tip.opened && tip.said), "Field tips: each opens its approved words (aria-expanded, aria-controls) and they are read out");
+        lc(() => fieldTips.length === 6 && fieldTips.every(tip => tip.esc), "Field tips: Esc closes the tip and focus goes back to its (i)");
+        lc(() => fieldTips.length === 6 && fieldTips.every(tip => tip.away && tip.tab), "Field tips: a click or tap elsewhere, or tabbing away, closes the tip");
+        lc(() => fieldTips.length === 6 && fieldTips.every(tip => tip.inView), "Field tips: a tip is never cut off by the window");
+        let comma = false;
+        await act(async () => {
+          newListing();
+          const input = $("includedInput");
+          const typeComma = () => { const event = new KeyboardEvent("keydown", {key: ",", bubbles: true, cancelable: true}); input.dispatchEvent(event); return event.defaultPrevented; };
+          const typed = value => { input.value = value; input.setSelectionRange(value.length, value.length); };
+          input.focus();
+          typed("Charger");
+          const ends = typeComma() && state.includedItems.join("|") === "Charger" && input.value === "";
+          typed("Cable (USB-C");
+          const bracket = !typeComma() && state.includedItems.length === 1;
+          typed("1");
+          const digits = !typeComma() && state.includedItems.length === 1;
+          typed("");
+          comma = ends && bracket && digits;
+          $("notes").focus();
+        });
+        lc(() => comma, "What's included: a typed comma ends an item, as its tip says (but not inside brackets or in 1,000)");
+
+        /* -- Button tips: on hover after about 0.4 s and on keyboard focus, also when disabled -- */
+        const BUTTONS = [["lookupBtn", "lookup"], ["mineBtn", "keywords"], ["modeBundle", "bundle"], ["formNewListingBtn", "newListing"], ["generateBtn", "generate"],
+          ["copyHtmlBtn", "copyHtml"], ["regenBtn", "regenerate"], ["editContentBtn", "editContent"], ["shuffleStyleBtn", "shuffle"], ["draftsBtn", "drafts"], ["aiStatus", "aiStatus"]];
+        let delay = null;
+        const buttonTips = [];
+        await act(async () => {
+          newListing();
+          const tip = $("btnTip"), started = performance.now();
+          hover($("generateBtn"));
+          await wait(200);
+          delay = {early: tip.hidden};
+          await until(() => !tip.hidden, 2000);
+          delay.late = !tip.hidden && words(tip.querySelector("b")) === "Generate listing" && performance.now() - started >= 380;
+          leave($("generateBtn"));
+          delay.gone = tip.hidden;
+          GUIDE_TIMES.tip = 20;
+          for (const [id, key] of BUTTONS) {
+            const el = $(id);
+            hover(el);
+            await until(() => !tip.hidden, 1000);
+            const describedBy = (el.getAttribute("aria-describedby") || "").split(/\s+/).map(ref => document.getElementById(ref)).filter(Boolean).map(words);
+            buttonTips.push({id, shown: !tip.hidden && words(tip.querySelector("b")) === tips()[key].title && words(tip.querySelector(".tip-text")) === tips()[key].text,
+              inView: inView(rectOf(tip)), described: describedBy.includes(tips()[key].text), disabled: el.disabled});
+            leave(el);
+          }
+        });
+        lc(() => delay.early && delay.late && delay.gone, "Button tips: hovering shows the tip after about 0.4 s, and leaving hides it");
+        lc(() => buttonTips.length === BUTTONS.length && buttonTips.every(tip => tip.shown && tip.inView),
+          "Button tips: Look up, Find keywords, Bundle / lot, New listing, Generate listing, Copy HTML, Regenerate…, Edit content, Shuffle look, Drafts and AI status show their approved words");
+        lc(() => buttonTips.length === BUTTONS.length && buttonTips.every(tip => tip.described), "Button tips: screen readers hear the same words with each button");
+        lc(() => buttonTips.some(tip => tip.id === "regenBtn" && tip.disabled && tip.shown) && buttonTips.some(tip => tip.id === "copyHtmlBtn" && tip.disabled && tip.shown),
+          "Button tips: a disabled button (Regenerate… or Copy HTML before the first listing) still shows its tip");
+        let focusTip = null;
+        await act(async () => {
+          const tip = $("btnTip");
+          press("Tab", {}, document.body);
+          $("lookupBtn").focus();
+          focusTip = {keyboard: !tip.hidden && words(tip.querySelector("b")) === "Look up"};
+          press("Escape", {}, $("lookupBtn"));
+          focusTip.esc = tip.hidden;
+          $("mineBtn").focus();
+          focusTip.next = !tip.hidden && words(tip.querySelector("b")) === "Find keywords";
+          $("notes").focus();
+          focusTip.blur = tip.hidden;
+          $("lookupBtn").dispatchEvent(new PointerEvent("pointerdown", {bubbles: true, pointerType: "mouse"}));
+          $("lookupBtn").focus();
+          focusTip.click = tip.hidden;
+          $("notes").focus();
+        });
+        lc(() => focusTip.keyboard && focusTip.esc && focusTip.next && focusTip.blur && focusTip.click,
+          "Button tips: keyboard focus shows the tip at once, Esc or moving on hides it, and a click doesn't show it");
+        let nativeTitle = null;
+        await act(async () => {
+          const button = $("formNewListingBtn"), tip = $("btnTip");
+          hover(button);
+          await until(() => !tip.hidden, 1000);
+          nativeTitle = {during: !button.hasAttribute("title") && !tip.hidden && /Shortcut: (Alt|Option)\+N/.test(words(tip.querySelector(".tip-extra")))};
+          leave(button);
+          nativeTitle.after = /\((Alt|Option)\+N\)/.test(button.title);
+        });
+        lc(() => nativeTitle.during && nativeTitle.after, "Button tips: no second browser tooltip while a tip shows (New listing's tip names Alt+N); the button's own title comes back after");
+
+        /* -- Start here: a marker on the product name until the seller types -- */
+        let startHere = null;
+        await act(async () => {
+          setRecord({}); newListing(); clearToasts();
+          await settleUi();
+          const marker = $("startHere");
+          startHere = {shown: shown(marker) && words(marker) === "Start here" && marker.closest(".field-head") === document.querySelector('label[for="productSearch"]').parentElement &&
+              ($("productSearch").getAttribute("aria-describedby") || "").split(/\s+/).includes("tipText-startHere"),
+            pulse: getComputedStyle(marker, "::after").animationName === "start-pulse",
+            still: [...document.querySelector("style").sheet.cssRules].some(rule => rule instanceof CSSMediaRule && /prefers-reduced-motion:\s*reduce/.test(rule.conditionText) &&
+              [...rule.cssRules].some(inner => /\.start-here::after/.test(inner.selectorText || "") && inner.style.animationName === "none"))};
+          hover(marker);
+          await until(() => !$("btnTip").hidden, 1000);
+          startHere.tip = !$("btnTip").hidden && words($("btnTip").querySelector(".tip-text")) === tips().startHere.text;
+          leave(marker);
+          // Even while it is back for a moment (an earlier Generate with nothing to go on), typing ends it.
+          GUIDE_TIMES.flash = 60000;
+          generate();
+          typeInto($("productSearch"), "Canon AE-1");
+          startHere.typed = !shown(marker) && record().startHereDismissed === true;
+          typeInto($("productSearch"), "");
+          newListing();
+          startHere.forGood = !shown(marker);
+          GUIDE_TIMES.flash = 250;
+          generate();
+          await settleUi();
+          startHere.flash = liveOf("note").map(textOf).includes("Start by describing the item.") && shown(marker) && marker.classList.contains("is-flash");
+          await until(() => !shown(marker), 2000);
+          startHere.flashGone = !shown(marker);
+          GUIDE_TIMES.flash = 60000;
+          generate();
+          const back = shown(marker);
+          newListing();
+          startHere.endsWithDraft = back && !shown(marker);
+        });
+        lc(() => startHere.shown && startHere.pulse && startHere.still, "Start here: a pill on Product name or model on a first run; it pulses gently, and stays still under reduced motion");
+        lc(() => startHere.tip, "Start here: hovering it shows what it means");
+        lc(() => startHere.typed && startHere.forGood, "Start here: typing a product name removes it for good");
+        lc(() => startHere.flash && startHere.flashGone && startHere.endsWithDraft,
+          "Start here: the Start by describing the item. Notice brings it back for a moment (a new listing ends that moment)");
+
+        /* -- The AI button, Help, Optional -- */
+        let pill = null;
+        await act(async () => {
+          setRecord({welcome: "done", tour: "done", checklist: "hidden", startHereDismissed: true});
+          setStatus(noneSetUp);
+          pill = {setup: $("statusText").textContent === "Set up AI" && $("aiStatus").classList.contains("is-setup") && getComputedStyle($("aiStatus")).borderTopStyle === "dashed" &&
+            $("statusDot").classList.contains("setup")};
+          $("aiStatus").click();
+          await settleUi();
+          pill.setupOpens = $("settingsOverlay").classList.contains("open") && settingsTab === "ai" && document.activeElement === keyPaste.input;
+          closeSettings();
+          setStatus(geminiReady);
+          pill.ready = $("statusText").textContent === "AI ready" && $("statusDot").classList.contains("on") && !$("aiStatus").classList.contains("is-setup");
+          $("aiStatus").click();
+          await settleUi();
+          pill.readyOpens = $("settingsOverlay").classList.contains("open") && settingsTab === "ai" && !welcomeOpen();
+          closeSettings();
+          setStatus(resting);
+          pill.busy = $("statusText").textContent === "AI busy · 40 s" && $("statusDot").classList.contains("busy");
+          setStatus(geminiReady);
+        });
+        lc(() => pill.setup && pill.setupOpens, "The AI button: Set up AI (dashed, orange) starts the AI setup");
+        lc(() => pill.ready && pill.readyOpens && pill.busy, "The AI button: AI ready (green dot) or AI busy · 40 s, and a click opens Settings › AI");
+        let help = null;
+        await act(async () => {
+          setRecord({welcome: "done", tour: "done", checklist: "auto", copied: true, startHereDismissed: true});
+          const button = $("helpBtn");
+          help = {button: button.tagName === "BUTTON" && button.getAttribute("aria-haspopup") === "menu" && button.getAttribute("aria-expanded") === "false" &&
+            button.getAttribute("aria-controls") === "helpPanel" && /help/i.test(button.getAttribute("aria-label")) && words(button) === "?" &&
+            button.closest(".header-actions") && button.closest(".header-actions").contains($("feedbackLink")) && $("feedbackLink").tagName === "A"};
+          button.focus(); button.click();
+          const items = () => [...$("helpPanel").querySelectorAll('[role="menuitem"]')].filter(shown);
+          help.open = $("helpPanel").getAttribute("role") === "menu" && shown($("helpPanel")) && button.getAttribute("aria-expanded") === "true" && document.activeElement === items()[0];
+          help.items = items().map(words).join("|");
+          const at = () => items().indexOf(document.activeElement);
+          press("ArrowDown"); const down = at() === 1;
+          press("End"); const end = at() === items().length - 1;
+          press("Home"); const home = at() === 0;
+          press("ArrowUp"); const wrap = at() === items().length - 1;
+          press("Escape");
+          help.keys = down && end && home && wrap && !shown($("helpPanel")) && document.activeElement === button && button.getAttribute("aria-expanded") === "false";
+          press("ArrowDown", {}, button);
+          const openDown = shown($("helpPanel")) && at() === 0;
+          press("Escape");
+          press("ArrowUp", {}, button);
+          help.arrowOpen = openDown && shown($("helpPanel")) && at() === items().length - 1;
+          const links = items().filter(item => item.tagName === "A");
+          help.links = links.length === 2 && links[0].href === "https://github.com/browser-b0X/marteloio/blob/main/docs/GUIDE.md" && links[1].href === $("feedbackLink").href &&
+            links.every(link => link.target === "_blank" && /\bnoopener\b/.test(link.rel));
+          press("Escape");
+          $("helpBtn").click(); $("helpSetup").click();
+          await settleUi();
+          help.setup = welcomeOpen() && !$("welcomeStep0").hidden;
+          $("welcomeSkip").click();
+          $("helpBtn").click(); $("helpTour").click();
+          await settleUi();
+          help.tour = tourActive() && $("tourTitle").textContent === "Start here";
+          endTour("skipped");
+          setRecord({welcome: "done", tour: "done", checklist: "auto", startHereDismissed: true});
+          $("helpBtn").click();
+          help.notOffered = !shown($("helpGuide"));
+          press("Escape");
+        });
+        lc(() => help.button && help.open, "Help: a ? button next to the GitHub link opens a menu, with focus on its first item");
+        lc(() => help.items === "Show the setup again|Take the tour|Show the Get set up guide|User guide↗ (opens in a new tab)|Report a problem↗ (opens in a new tab)" &&
+          help.links && help.notOffered, "Help: Show the setup again, Take the tour, Show the Get set up guide (when hidden or done), User guide and Report a problem");
+        lc(() => help.keys && help.arrowOpen, "Help: arrow keys, Home and End move through it, and Esc closes it back to its button");
+        lc(() => help.setup && help.tour, "Help: Show the setup again opens the welcome; Take the tour starts the tour");
+        lc(() => {
+          const hint = $("lookupHint"), tag = hint.querySelector(".opt-tag");
+          return shown(tag) && words(tag) === "Optional" && words(hint).startsWith("Optional Look up and Find keywords") &&
+            tips().lookup.text.startsWith("Optional.") && tips().keywords.text.startsWith("Optional.");
+        }, "Look up and Find keywords are marked Optional, and their tips say so");
+
+        /* -- Storage that throws: everything still works for this visit -- */
+        let storageThrows = null;
+        await act(async () => {
+          clearToasts();
+          const realGet = Storage.prototype.getItem, realSet = Storage.prototype.setItem;
+          const deny = () => { throw new DOMException("Fixture blocked storage", "SecurityError"); };
+          Storage.prototype.getItem = deny; Storage.prototype.setItem = deny;
+          try {
+            loadGuide();
+            storageThrows = {fresh: guideInfo().welcome === ""};
+            openWelcome();
+            $("welcomeSkip").click();
+            startTour(); $("tourNext").click(); press("Escape", {}, $("tourCard"));
+            hideSetupGuide();
+            storageThrows.session = !welcomeOpen() && !tourActive() && guideInfo().welcome === "skipped" && guideInfo().tour === "skipped" && guideInfo().checklist === "hidden";
+            storageThrows.quiet = !liveOf("err").length;
+          } finally { Storage.prototype.getItem = realGet; Storage.prototype.setItem = realSet; }
+        });
+        lc(() => storageThrows.fresh && storageThrows.session && storageThrows.quiet,
+          "When storage throws, the welcome, the tour and the guide still work for this visit, with no error message");
+      } finally {
+        if (clipboard) clipboard.writeText = realWrite;
+        if (motionDescriptor) Object.defineProperty(motionMedia, "matches", motionDescriptor); else delete motionMedia.matches;
+        try { if (savedTimes) Object.assign(GUIDE_TIMES, savedTimes); } catch (_) { /* older code */ }
+        try { endTour("skipped"); } catch (_) { /* older code */ }
+        try { closeWelcome(""); } catch (_) { /* older code */ }
+        try { closeSettings(); } catch (_) { /* older code */ }
+        for (const frame of frames.splice(0)) frame.remove();
+        still.remove();
+        aiStatus = savedStatus; detectReply = savedDetect; settingsReply = savedSettings;
+        try { applyAiStatus(savedStatus); } catch (_) { /* older code */ }
+        localStorage.setItem(GUIDE_RECORD, JSON.stringify(GUIDE_DONE));
+        try { loadGuide(); } catch (_) { /* older code */ }
+        for (const [id, value] of Object.entries(savedSeller)) $(id).value = value;
+        for (const [key, value] of Object.entries(savedPrefs)) { if (value === null) localStorage.removeItem(key); else localStorage.setItem(key, value); }
+        try { syncSellerFieldHints(); } catch (_) { /* older code */ }
+        $("appTheme").value = savedTheme; $("appTheme").dispatchEvent(new Event("change"));
+        pending.splice(0);
+        clearToasts();
+        newListing();
+        try { renderGuide(); } catch (_) { /* older code */ }
+        if (soft) {
+          const note = document.createElement("p");
+          note.id = "wave3-soft-failures";
+          note.dataset.count = String(softFailures.length);
+          note.textContent = "WAVE 3 SOFT FAILURES (" + softFailures.length + "): " + softFailures.join(" | ");
+          panel.append(note);
+        }
+      }
+    }
+    /* ---- v0.2.0 QA walkthrough fixes ----
+       Runs after the wave 3 checks, or alone with ?qa. With ?soft it records failures instead of
+       stopping, so it can be run against the code before these fixes (each check must fail there). */
+    async function qaChecks() {
+      const soft = new URLSearchParams(location.search).has("soft");
+      const softFailures = [];
+      const lc = (fn, label) => {
+        let ok = false;
+        try { ok = Boolean(fn()); } catch (_) { ok = false; }
+        if (ok || !soft) check(ok, label); else softFailures.push(label);
+      };
+      const act = async fn => { try { await fn(); } catch (_) { /* the outcome is checked next */ } };
+      const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+      const until = async (fn, ms = 2500) => {
+        const end = performance.now() + ms;
+        for (;;) {
+          let ok = false;
+          try { ok = Boolean(fn()); } catch (_) { ok = false; }
+          if (ok) return true;
+          if (performance.now() > end) return false;
+          await wait(10);
+        }
+      };
+      const settleUi = async () => { for (let i = 0; i < 8; i++) await tick(); };
+      const typeInto = (el, value) => { el.value = value; el.dispatchEvent(new Event("input", {bubbles: true})); };
+      const hover = el => el.dispatchEvent(new PointerEvent("pointerover", {bubbles: true, pointerType: "mouse"}));
+      const leave = el => el.dispatchEvent(new PointerEvent("pointerout", {bubbles: true, pointerType: "mouse", relatedTarget: document.body}));
+      const words = el => (el && el.textContent || "").replace(/\s+/g, " ").trim();
+      const live = () => [...document.querySelectorAll("#toastPanel .toast-item:not(.leaving)")];
+      const liveOf = kind => live().filter(item => item.querySelector(".toast." + kind));
+      const textOf = item => (item && item.querySelector(".toast p") || {}).textContent || "";
+      const titleOf = item => (item && item.querySelector(".toast-title > span") || {}).textContent || "";
+      const actionOf = item => item && item.querySelector(".toast-action");
+      const countOf = item => item && !item.querySelector(".toast-count").hidden ? words(item.querySelector(".toast-count [aria-hidden]")) : "";
+      const failWith = (request, status, data) => request.resolve({ok: false, status, json: async () => data});
+      const takeRequest = async path => {
+        await until(() => pending.some(request => request.path === path));
+        const at = pending.findIndex(request => request.path === path);
+        return at < 0 ? null : pending.splice(at, 1)[0];
+      };
+      const clearToasts = () => {
+        try { if (busyToast) dismissToast(busyToast); } catch (_) { /* older code */ }
+        for (const item of [...document.querySelectorAll("#toastPanel .toast-item")]) {
+          try { dismissToast(item); } catch (_) { /* older code */ }
+          item.remove();
+        }
+      };
+      const noteOf = id => $(id).hidden ? "" : words($(id).querySelector(".step-note-text"));
+      const noteFixOf = id => $(id).querySelector(".step-note-fix").hidden ? "" : words($(id).querySelector(".step-note-fix"));
+      const lum = color => {
+        const [r, g, b] = color.match(/[\d.]+/g).slice(0, 3).map(Number).map(v => { v /= 255; return v <= .03928 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; });
+        return .2126 * r + .7152 * g + .0722 * b;
+      };
+      const contrastOf = (fg, bg) => { const a = lum(fg), b = lum(bg); return (Math.max(a, b) + .05) / (Math.min(a, b) + .05); };
+      const hueOf = color => {
+        const [r, g, b] = color.match(/[\d.]+/g).slice(0, 3).map(v => Number(v) / 255);
+        const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+        if (!d) return 0;
+        const h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+        return (h * 60 + 360) % 360;
+      };
+      const hueApart = (a, b) => { const d = Math.abs(hueOf(a) - hueOf(b)); return Math.min(d, 360 - d); };
+      // The server's /ai/status for four services, with the given ones changed ({gemini: {configured: true, …}}).
+      const provider = (id, label) => ({id, label, configured: false, enabled: true, state: "off", retry_in: 0, model: "", key_hint: "", checked: "",
+        ...(id === "freellmapi" ? {base_url: "http://127.0.0.1:31415/v1"} : {})});
+      const SERVICES = [["freellmapi", "FreeLLMAPI"], ["gemini", "Google Gemini"], ["groq", "Groq"], ["openrouter", "OpenRouter"]];
+      const statusWith = (changes = {}) => {
+        const providers = SERVICES.map(([id, label]) => ({...provider(id, label), ...(changes[id] || {})}));
+        const ready = providers.some(p => p.state === "ready");
+        const waits = providers.filter(p => p.configured && p.enabled && p.retry_in > 0).map(p => p.retry_in);
+        return {ready, retry_in: ready || !waits.length ? 0 : Math.min(...waits), providers};
+      };
+      const noneSetUp = statusWith();
+      const twoSetUp = statusWith({freellmapi: {configured: true, state: "ready", key_hint: "9f3c", checked: "ok", model: "auto:fast"},
+        gemini: {configured: true, state: "ready", key_hint: "a1B2", checked: "ok", model: "gemini-flash-latest"}});
+      const GUIDE_RECORD = "marteloio.guide.v1";
+      const setRecord = value => { localStorage.setItem(GUIDE_RECORD, JSON.stringify(value)); try { loadGuide(); renderGuide(); } catch (_) { /* older code */ } };
+      const setStatus = status => { aiStatus = status; try { applyAiStatus(status); } catch (_) { /* older code */ } };
+      const pasteInto = (input, text) => {
+        const win = input.ownerDocument.defaultView, data = new win.DataTransfer();
+        data.setData("text/plain", text);
+        input.dispatchEvent(new win.ClipboardEvent("paste", {clipboardData: data, bubbles: true, cancelable: true}));
+      };
+      const savedStatus = aiStatus, savedDetect = detectReply, savedTheme = document.documentElement.dataset.theme;
+      const savedSeller = Object.fromEntries(["storeName", "memberYear", "fbPct"].map(id => [id, $(id).value]));
+      const savedPrefs = Object.fromEntries(["eb.store", "eb.memberYear", "eb.fbPct"].map(key => [key, localStorage.getItem(key)]));
+      let savedGuideTimes = null, savedSettingsTimes = null;
+      try { savedGuideTimes = {...GUIDE_TIMES}; } catch (_) { /* older code */ }
+      try { savedSettingsTimes = {...SETTINGS_TIMES}; } catch (_) { /* older code */ }
+      const clipboard = navigator.clipboard, realWrite = clipboard && clipboard.writeText;
+      if (clipboard) clipboard.writeText = async () => {};
+      const frames = [];
+      const loadApp = async (query, width = 1366, height = 768) => {
+        const frame = document.createElement("iframe");
+        frame.style.cssText = "position:fixed;left:-20000px;top:0;border:0;width:" + width + "px;height:" + height + "px";
+        const loaded = new Promise(resolve => { frame.onload = resolve; });
+        frame.src = "/?app-only&" + query;
+        document.body.append(frame);
+        frames.push(frame);
+        await loaded;
+        const doc = frame.contentDocument;
+        const settled = doc.createElement("style");
+        settled.textContent = "*, *::before, *::after { animation: none !important; transition: none !important; }";
+        doc.head.append(settled);
+        await until(() => doc.getElementById("statusText").textContent !== "Checking AI…", 4000);
+        await wait(80);
+        return {frame, win: frame.contentWindow, doc, $: id => doc.getElementById(id), fixture: frame.contentWindow.__fixture};
+      };
+      pending.splice(0);
+      try {
+        await act(() => { closeSettings(); newListing(); });
+        clearToasts();
+
+        /* -- 1. Connected means set up, switched on, not turned down and its check not failed -- */
+        let failedPaste = null;
+        await act(async () => {
+          setStatus(noneSetUp); setRecord({});
+          openWelcome();
+          await settleUi();
+          pasteInto(welcomePaste.input, "AIzaSyFixtureOfflineKey0123456789abcd");
+          const request = await takeRequest("/settings/ai");
+          // Saved, but Google Gemini couldn't be reached, so its check failed.
+          const offline = statusWith({gemini: {configured: true, state: "unavailable", retry_in: 30, key_hint: "abcd", checked: "failed"}});
+          aiStatus = offline;
+          request.resolve(reply({saved: true, provider: "gemini", label: "Google Gemini",
+            test: {ok: false, kind: "unavailable", message: "Google Gemini couldn't be reached. Check your internet connection and try again."}, status: offline}));
+          await until(() => welcomePaste.result.classList.contains("is-err"));
+          failedPaste = {result: words(welcomePaste.result), next: $("welcomeNext").classList.contains("btn-primary"), paste: welcomePaste.button.classList.contains("btn-primary"),
+            pill: $("statusText").textContent};
+          $("welcomeNext").click();
+          await settleUi();
+          failedPaste.tick = $("welcomeCourse").children[0].className;
+          failedPaste.note = !$("welcomeNoAi").hidden;
+          $("welcomeSkip").click();
+        });
+        lc(() => failedPaste.result === "Google Gemini couldn't be reached. Check your internet connection and try again." && !failedPaste.next && failedPaste.paste &&
+          failedPaste.pill === "Set up AI" && failedPaste.tick === "" && failedPaste.note,
+          "QA 1: a pasted key that fails its check isn't connected: Continue stays secondary, Connect AI isn't ticked and the AI button says Set up AI");
+        let afterRest = null;
+        await act(async () => {
+          // Its rest is over (ready) but its check failed: not AI ready, and Get set up still asks for a key.
+          setStatus(statusWith({gemini: {configured: true, state: "ready", key_hint: "abcd", checked: "failed"}}));
+          setRecord({welcome: "skipped"});
+          newListing();
+          afterRest = {pill: $("statusText").textContent, tick: $("setupSteps").children[0].classList.contains("is-done"), paste: !setupPaste.root.hidden};
+          // A key the service turns down isn't saved (saved: false), and the step stays unticked.
+          setupPaste.save("AIzaSyFixtureWrongKey0123456789abcdef");
+          const request = await takeRequest("/settings/ai");
+          const before = statusWith({gemini: {configured: true, state: "ready", key_hint: "abcd", checked: "failed"}});
+          request.resolve(reply({saved: false, provider: "gemini", label: "Google Gemini",
+            test: {ok: false, kind: "key_rejected", message: "Google Gemini didn't accept this key. Copy the whole key and paste it again."}, status: before}));
+          await until(() => setupPaste.result.classList.contains("is-err"));
+          afterRest.rejected = words(setupPaste.result) === "Google Gemini didn't accept this key. Copy the whole key and paste it again. Your saved key (\u2026abcd) is still in use." &&
+            !$("setupSteps").children[0].classList.contains("is-done") && $("statusText").textContent === "Set up AI";
+        });
+        lc(() => afterRest.pill === "Set up AI" && !afterRest.tick && afterRest.paste && afterRest.rejected,
+          "QA 1: a service whose check failed isn't AI ready after its rest, Get set up keeps asking for a key, and a key turned down (saved: false) changes nothing");
+
+        /* -- 2. Messages for FreeLLMAPI and every service switched off; a step note says what its message said -- */
+        const SERVER = {
+          freellmapi_not_running: "FreeLLMAPI isn't running on this computer. Start it, then try again.",
+          freellmapi_no_services: "FreeLLMAPI is running but has no AI services yet. Add a key on its Keys page, then try again.",
+          all_disabled: "Every AI service is switched off. Turn one on in Settings › AI.",
+          provider_busy: "The AI services couldn't be reached. Your draft is safe. Check your internet connection and try again in 30 seconds."};
+        const failures = {};
+        for (const kind of Object.keys(SERVER)) {
+          await act(async () => {
+            setStatus(kind === "all_disabled" ? statusWith({gemini: {configured: true, enabled: false, state: "disabled", key_hint: "a1B2", checked: "ok"}}) : twoSetUp);
+            setRecord({});
+            clearToasts(); newListing(); typeInto($("notes"), "QA fixture " + kind);
+            const run = generate(); const request = await takeRequest("/llm/chat/completions");
+            failWith(request, 503, {kind, error: SERVER[kind], ...(kind === "provider_busy" ? {retry_after: 30} : {})});
+            await run; await settleUi();
+            const item = liveOf("err").at(-1);
+            failures[kind] = {text: textOf(item), title: titleOf(item), action: words(actionOf(item)), note: noteOf("generateNote"), fix: noteFixOf("generateNote")};
+            if (kind === "all_disabled") {
+              actionOf(item).click();
+              await settleUi();
+              failures[kind].opens = $("settingsOverlay").classList.contains("open") && $("settingsTab-ai").getAttribute("aria-selected") === "true" && !welcomeOpen();
+              closeSettings();
+            }
+          });
+        }
+        lc(() => ["freellmapi_not_running", "freellmapi_no_services", "all_disabled"].every(kind => failures[kind].text === SERVER[kind] &&
+            failures[kind].title === "Couldn't write the listing" && failures[kind].note === "Couldn't write the listing. " + SERVER[kind]) &&
+          failures.freellmapi_not_running.action === "" && failures.freellmapi_no_services.action === "" &&
+          failures.all_disabled.action === "Set up AI" && failures.all_disabled.fix === "Set up AI" && failures.all_disabled.opens,
+          "QA 2: FreeLLMAPI not running, FreeLLMAPI without services and every service switched off each say so; Set up AI opens Settings › AI for the switches");
+        lc(() => failures.provider_busy.text === SERVER.provider_busy &&
+          failures.provider_busy.note === "Couldn't write the listing. The AI services couldn't be reached. Check your internet connection and try again in a moment.",
+          "QA 2: a step note says what its message said (couldn't be reached, not busy), without a countdown that goes stale");
+
+        /* -- 3. The FreeLLMAPI card stays until FreeLLMAPI is connected -- */
+        let card = null;
+        await act(async () => {
+          clearToasts(); closeSettings();
+          setStatus(noneSetUp); setRecord({});
+          detectReply = {found: true, ready: false, base_url: "http://127.0.0.1:31415/v1", reason: "no_upstreams"};
+          openWelcome();
+          await until(() => !$("welcomeFound").hidden);
+          pasteInto(welcomePaste.input, "freellmapi-0a1b2c3d0a1b2c3d");
+          const request = await takeRequest("/settings/ai");
+          // Saved, but FreeLLMAPI couldn't answer (no AI services in it yet): its check failed.
+          const failing = statusWith({freellmapi: {configured: true, state: "unavailable", retry_in: 30, key_hint: "2c3d", checked: "failed"}});
+          aiStatus = failing;
+          request.resolve(reply({saved: true, provider: "freellmapi", label: "FreeLLMAPI", test: {ok: false, kind: "unavailable",
+            message: "FreeLLMAPI is running but has no AI services yet. Add a key on its Keys page, then choose Test again."}, status: failing}));
+          await until(() => welcomePaste.result.classList.contains("is-err"));
+          card = {welcome: !$("welcomeFound").hidden};
+          $("welcomeSkip").click();
+          await openSettings("ai");
+          await until(() => !$("aiFound").hidden);
+          card.settings = !$("aiFound").hidden;
+          setStatus(statusWith({freellmapi: {configured: true, state: "ready", key_hint: "2c3d", checked: "ok"}}));
+          card.goneWhenConnected = $("aiFound").hidden;
+          closeSettings();
+          detectReply = savedDetect;
+        });
+        lc(() => card.welcome && card.settings && card.goneWhenConnected,
+          "QA 3: when a FreeLLMAPI key doesn't work, the FreeLLMAPI is running card stays in the welcome and Settings until FreeLLMAPI is connected");
+
+        /* -- 4. Two messages at once: screen readers hear both, in order, each once -- */
+        let heard = [];
+        await act(async () => {
+          setStatus(twoSetUp);
+          setRecord({welcome: "done", tour: "done", generated: true, tourNotice: true, startHereDismissed: true});
+          clearToasts(); newListing(); typeInto($("notes"), "QA fixture first copy");
+          const run = generate(); complete(await takeRequest("/llm/chat/completions"), listing("QA first copy title")); await run;
+          // Earlier messages have all been read out.
+          await until(() => typeof sayQueue === "undefined" || (!sayQueue.length && !sayTimer), 8000);
+          const watch = new MutationObserver(() => {
+            for (const id of ["toastAnnounce", "toastAlert"]) {
+              const text = words($(id));
+              if (text && heard[heard.length - 1] !== text) heard.push(text);
+            }
+          });
+          for (const id of ["toastAnnounce", "toastAlert"]) watch.observe($(id), {childList: true, subtree: true, characterData: true});
+          $("copyHtmlBtn").click();
+          const gap = Number(TOAST_TIMES.sayGap) || 0;
+          await until(() => heard.length >= 2, gap * 2 + 1500);
+          await wait(gap + 100);
+          watch.disconnect();
+        });
+        lc(() => heard.length === 2 && heard[0] === "Notice: " + ListingCore.GUIDE_TIPS.copyHtml.text &&
+          heard[1] === "Done: You're set up. Find the tour and this guide again under Help (?).",
+          "QA 4: the first Copy HTML gives two messages at once, and screen readers hear both, in order, each once");
+
+        /* -- 5. The same step failing again: one message, ×2, the new words -- */
+        let repeated = null;
+        await act(async () => {
+          setStatus(twoSetUp);
+          clearToasts(); newListing(); typeInto($("notes"), "QA fixture repeated failure");
+          const unreachable = n => ({kind: "provider_busy", retry_after: n,
+            error: "The AI services couldn't be reached. Your draft is safe. Check your internet connection and try again in " + n + " seconds."});
+          let run = generate(); failWith(await takeRequest("/llm/chat/completions"), 503, unreachable(30)); await run;
+          run = generate(); failWith(await takeRequest("/llm/chat/completions"), 503, unreachable(27)); await run;
+          const items = liveOf("err");
+          repeated = {count: items.length, text: textOf(items[0]), times: countOf(items[0])};
+        });
+        lc(() => repeated.count === 1 && repeated.times === "×2" && repeated.text.endsWith("try again in 27 seconds."),
+          "QA 5: the same step failing the same way again shows one message, ×2, with the new words (…27 seconds)");
+
+        /* -- 7. Plain words: the service's name, plain words per service, AI busy only for a rate limit -- */
+        let written = "";
+        await act(async () => {
+          clearToasts(); newListing(); typeInto($("notes"), "QA fixture written with");
+          const run = generate(); const request = await takeRequest("/llm/chat/completions");
+          request.resolve(reply({model: "freellmapi/auto:fast", provider: "freellmapi", choices: [{message: {content: JSON.stringify(listing("QA written title"))}}]}));
+          await run;
+          written = words($("modelMeta"));
+        });
+        lc(() => /^Written with FreeLLMAPI in \d+(\.\d)? s\. Check every fact before you paste it into eBay\.$/.test(written),
+          "QA 7: a new listing says which service wrote it by name (Written with FreeLLMAPI), never its model");
+        let tipWords = "";
+        await act(() => {
+          setStatus(statusWith({freellmapi: {configured: true, state: "ready", key_hint: "9f3c", checked: "ok", model: "auto:fast"},
+            gemini: {configured: true, state: "rate_limited", retry_in: 40, key_hint: "a1B2", checked: "ok", model: "gemini-flash-latest"},
+            groq: {model: "openai/gpt-oss-120b"}, openrouter: {configured: true, enabled: false, state: "disabled", key_hint: "WXYZ", model: "openrouter/free"}}));
+          const el = $("aiStatus");
+          tipWords = el.dataset.nativeTitle !== undefined ? el.dataset.nativeTitle : el.title;
+        });
+        lc(() => tipWords === "FreeLLMAPI: ready\nGoogle Gemini: resting 40 s\nGroq: not set up\nOpenRouter: switched off",
+          "QA 7: the AI button's tip lists each service in plain words, without model names");
+        const pills = [];
+        await act(() => {
+          for (const [state, rest] of [["unavailable", 30], ["timeout", 12], ["rate_limited", 30]]) {
+            setStatus(statusWith({gemini: {configured: true, state, retry_in: rest, key_hint: "a1B2", checked: "ok"}}));
+            pills.push($("statusText").textContent + "|" + $("statusDot").className);
+          }
+          clearTimeout(healthRetryTimer);
+        });
+        lc(() => pills.join(",") === "AI offline · 30 s|dot off,AI offline · 12 s|dot off,AI busy · 30 s|dot busy",
+          "QA 7: the AI button says AI busy only for a rate limit, and AI offline · 30 s when the services couldn't be reached or took too long");
+
+        /* -- 8. Your shop: Skip this step keeps nothing typed -- */
+        let skipped = null;
+        await act(async () => {
+          setStatus(twoSetUp); setRecord({});
+          const before = {store: $("storeName").value, year: $("memberYear").value, saved: localStorage.getItem("eb.store"), savedYear: localStorage.getItem("eb.memberYear")};
+          openWelcome(1);
+          await settleUi();
+          typeInto($("welcomeStoreName"), "QA Skipped Store"); $("welcomeStoreName").dispatchEvent(new Event("change"));
+          typeInto($("welcomeMemberYear"), "1990"); $("welcomeMemberYear").dispatchEvent(new Event("change"));
+          $("welcomeShopSkip").click();
+          await settleUi();
+          skipped = {tour: !$("welcomeStep2").hidden, kept: $("storeName").value === before.store && $("memberYear").value === before.year &&
+            localStorage.getItem("eb.store") === before.saved && localStorage.getItem("eb.memberYear") === before.savedYear, label: words($("welcomeShopSkip"))};
+          $("welcomeTourLater").click();
+        });
+        lc(() => skipped.tour && skipped.kept && skipped.label === "Skip this step",
+          "QA 8: Skip this step keeps nothing typed in Your shop (a wrong year isn't saved)");
+
+        /* -- 9. A Notice doesn't look like a Problem, in either theme -- */
+        const colours = {};
+        await act(async () => {
+          for (const theme of ["light", "dark"]) {
+            $("appTheme").value = theme; $("appTheme").dispatchEvent(new Event("change"));
+            clearToasts();
+            const note = toast("note", "QA fixture notice colour."), problem = toast("err", "QA fixture problem colour.");
+            const icon = item => getComputedStyle(item.querySelector(".toast-icon"));
+            colours[theme] = {note: icon(note).backgroundColor, glyph: icon(note).color, problem: icon(problem).backgroundColor};
+          }
+          clearToasts();
+          $("appTheme").value = savedTheme; $("appTheme").dispatchEvent(new Event("change"));
+        });
+        lc(() => ["light", "dark"].every(theme => hueApart(colours[theme].note, colours[theme].problem) >= 60 && contrastOf(colours[theme].glyph, colours[theme].note) >= 4.5),
+          "QA 9: a Notice has its own calm colour, clearly apart from a Problem's, with AA contrast, in light and dark");
+
+        /* -- 10. Remove: one wording, and its line goes when the button goes back -- */
+        let removal = null;
+        await act(async () => {
+          setStatus(twoSetUp);
+          try { SETTINGS_TIMES.removeConfirm = 150; } catch (_) { /* older code */ }
+          await openSettings("ai");
+          setAiRowOpen(aiRowOf("gemini"), true);
+          const button = aiRowOf("gemini").querySelector(".ai-remove"), line = aiRowOf("gemini").querySelector(".key-result");
+          const waiting = pending.filter(request => request.path === "/settings/ai").length;
+          button.click(); await settleUi();
+          removal = {button: words(button), line: line.hidden ? "" : words(line), quiet: pending.filter(request => request.path === "/settings/ai").length === waiting};
+          await until(() => words(button) === "Remove" && line.hidden, 1500);
+          removal.after = words(button) + "|" + (line.hidden ? "" : words(line));
+          closeSettings();
+        });
+        lc(() => removal.button === "Remove now" && removal.line === "Choose Remove now to delete the Google Gemini key from this computer." && removal.quiet &&
+          removal.after === "Remove|", "QA 10: Remove asks once more in the same words on the button and its line (Remove now), and the line goes when the button goes back");
+
+        /* -- 11. Phone line, Start here tip, saved-key box, Settings tab bar -- */
+        let phoneLine = null;
+        await act(async () => {
+          const app = await loadApp("ai=none", 390, 844);
+          const input = app.$("welcomePasteMount").querySelector("input");
+          pasteInto(input, "freellmapi-0a1b2c3d0a1b2c3d");
+          await until(() => app.fixture.pending.some(request => request.path === "/settings/ai"));
+          const request = app.fixture.pending.splice(app.fixture.pending.findIndex(item => item.path === "/settings/ai"), 1)[0];
+          const connected = statusWith({freellmapi: {configured: true, state: "ready", key_hint: "2c3d", checked: "ok"}});
+          app.fixture.setStatus(connected);
+          request.resolve(app.fixture.reply({saved: true, provider: "freellmapi", label: "FreeLLMAPI", test: {ok: true, ms: 100, model: "auto:fast"}, status: connected}));
+          await until(() => app.$("welcomePasteMount").querySelector(".key-result.is-ok"));
+          const line = app.$("welcomePasteMount").querySelector(".key-result"), detail = line.querySelector(".detail");
+          const walker = app.doc.createTreeWalker(line, NodeFilter.SHOW_TEXT), text = walker.nextNode(), range = app.doc.createRange();
+          range.selectNodeContents(text);
+          const textLines = [...range.getClientRects()], last = textLines[textLines.length - 1], first = detail.getClientRects()[0];
+          phoneLine = {words: words(line), flows: first.top >= last.top - 1 && line.scrollWidth <= line.clientWidth};
+        });
+        lc(() => phoneLine.words === "FreeLLMAPI is connected · it answered in 0.1 seconds" && phoneLine.flows,
+          "QA 11: on a phone the connected line reads as one sentence; it never splits into two columns");
+        let startTip = "";
+        await act(async () => {
+          setRecord({welcome: "done", tour: "done", generated: true, copied: true, tourNotice: true});
+          newListing();
+          try { GUIDE_TIMES.tip = 0; } catch (_) { /* older code */ }
+          hover($("startHere"));
+          await until(() => !$("btnTip").hidden, 1500);
+          startTip = words($("btnTip"));
+          leave($("startHere"));
+        });
+        lc(() => (startTip.match(/Start here/g) || []).length === 1 && startTip.includes("type what you're selling"),
+          "QA 11: the Start here tooltip says Start here once");
+        let holder = null, bar = null;
+        await act(async () => {
+          setStatus(twoSetUp);
+          await openSettings("ai");
+          setAiRowOpen(aiRowOf("freellmapi"), true);
+          const box = aiRowOf("freellmapi").querySelector(".ai-key"), style = getComputedStyle(box), ctx = document.createElement("canvas").getContext("2d");
+          ctx.font = style.fontStyle + " " + style.fontWeight + " " + style.fontSize + " " + style.fontFamily;
+          holder = {text: box.placeholder, fits: ctx.measureText(box.placeholder).width <= box.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)};
+          closeSettings();
+        });
+        await act(async () => {
+          // A fresh copy of the app at 1366×768 (nothing else on top of it), Settings › AI with every line
+          // open so the pane is long, scrolled until a chip is just under the tab bar.
+          const app = await loadApp("theme=light&guide=" + encodeURIComponent(JSON.stringify({welcome: "done", tour: "done", copied: true, tourNotice: true})));
+          app.fixture.setStatus(twoSetUp);
+          app.win.applyAiStatus(twoSetUp);
+          await app.win.openSettings("ai");
+          const tabs = app.$("settingsTabs"), body = app.$("settingsBody"), before = tabs.getBoundingClientRect().height;
+          for (const id of ["freellmapi", "gemini"]) app.win.setAiRowOpen(app.win.aiRowOf(id), true);
+          app.win.setAiRowOpen(app.doc.querySelector("#aiRows .ai-group"), true);
+          for (const id of ["groq", "openrouter"]) app.win.setAiRowOpen(app.win.aiRowOf(id), true);
+          await wait(30);
+          const chip = app.win.aiRowOf("freellmapi").querySelector(".ai-chip");
+          for (let top = 0; top < body.scrollHeight && chip.getBoundingClientRect().bottom - tabs.getBoundingClientRect().bottom > 3; top++) body.scrollTop = top;
+          const line = tabs.getBoundingClientRect(), r = chip.getBoundingClientRect(), hit = app.doc.elementFromPoint((r.left + r.right) / 2, line.bottom - 3);
+          bar = {kept: Math.abs(line.height - before) < 0.5 && tabs.scrollHeight <= tabs.clientHeight + 1, over: Boolean(hit) && tabs.contains(hit),
+            joined: Math.abs(body.getBoundingClientRect().top - line.bottom) < 0.5, scrolled: body.scrollTop > 0};
+        });
+        lc(() => holder.text === "Saved (…9f3c)" && holder.fits, "QA 11: a saved key's box says Saved (…9f3c), short enough to fit FreeLLMAPI's narrow box");
+        lc(() => bar.kept && bar.over && bar.joined && bar.scrolled,
+          "QA 11: Settings › AI scrolled: the tab bar keeps its full height and nothing from the list shows over it");
+
+        /* -- QA re-test 1. A service that is busy accepted the key: calm words, not a problem -- */
+        const BUSY = "FreeLLMAPI accepted the key but is busy right now. Marteloio will try it again in 20 seconds.";
+        let busyKey = null;
+        await act(async () => {
+          closeSettings(); clearToasts();
+          setStatus(noneSetUp); setRecord({});
+          openWelcome();
+          await settleUi();
+          pasteInto(welcomePaste.input, "freellmapi-0a1b2c3d0a1b2c3d");
+          const request = await takeRequest("/settings/ai");
+          // The key is saved and connected (its check is "ok"); the service is resting for 20 s.
+          const busy = statusWith({freellmapi: {configured: true, state: "rate_limited", retry_in: 20, key_hint: "2c3d", checked: "ok"}});
+          aiStatus = busy;
+          request.resolve(reply({saved: true, provider: "freellmapi", label: "FreeLLMAPI", test: {ok: false, kind: "rate_limited", message: BUSY}, status: busy}));
+          await until(() => !welcomePaste.result.classList.contains("is-busy") && !welcomePaste.result.hidden);
+          const line = welcomePaste.result, style = getComputedStyle(line);
+          busyKey = {calm: line.classList.contains("is-note") && !line.classList.contains("is-err") && contrastOf(style.color, style.backgroundColor) >= 4.5,
+            text: words(line), next: $("welcomeNext").classList.contains("btn-primary"), pill: $("statusText").textContent};
+          $("welcomeNext").click();
+          await settleUi();
+          busyKey.tick = $("welcomeCourse").children[0].className;
+          $("welcomeSkip").click();
+          // Test again in Settings › AI says it the same calm way.
+          await openSettings("ai");
+          setAiRowOpen(aiRowOf("freellmapi"), true);
+          aiRowOf("freellmapi").querySelector(".ai-test").click();
+          (await takeRequest("/ai/test")).resolve(reply({ok: false, kind: "rate_limited", message: BUSY}));
+          const row = aiRowOf("freellmapi").querySelector(".key-result");
+          await until(() => !row.classList.contains("is-busy"));
+          busyKey.row = row.classList.contains("is-note") && !row.classList.contains("is-err") && words(row) === BUSY;
+          closeSettings();
+        });
+        lc(() => busyKey.calm && busyKey.text === BUSY && busyKey.next && busyKey.tick === "is-done" && busyKey.pill === "AI busy · 20 s" && busyKey.row,
+          "QA re-test 1: a key whose service is busy is a working key: calm words (not a red problem), Connect AI ticked, AI busy · 20 s");
+
+        /* -- QA re-test 2. After a listing or a section, written or failed, the AI button is checked again at once -- */
+        let refreshed = null;
+        await act(async () => {
+          setStatus(twoSetUp); setRecord({welcome: "done", tour: "done", generated: true, copied: true, tourNotice: true, startHereDismissed: true});
+          clearToasts(); newListing(); typeInto($("notes"), "QA re-test status refresh");
+          let run = generate(), request = await takeRequest("/llm/chat/completions");
+          // While it was writing, the services stopped answering.
+          aiStatus = statusWith({freellmapi: {configured: true, state: "unavailable", retry_in: 25, key_hint: "9f3c", checked: "ok"},
+            gemini: {configured: true, state: "rate_limited", retry_in: 40, key_hint: "a1B2", checked: "ok"}});
+          failWith(request, 503, {kind: "provider_busy", retry_after: 25,
+            error: "The AI services couldn't be reached. Your draft is safe. Check your internet connection and try again in 25 seconds."});
+          await run;
+          await until(() => $("statusText").textContent !== "AI ready", 1500);
+          refreshed = {failed: $("statusText").textContent};
+          aiStatus = twoSetUp;
+          run = generate(); complete(await takeRequest("/llm/chat/completions"), listing("QA re-test refreshed title")); await run;
+          await until(() => $("statusText").textContent === "AI ready", 1500);
+          refreshed.written = $("statusText").textContent;
+          aiStatus = statusWith({freellmapi: {configured: true, state: "rate_limited", retry_in: 30, key_hint: "9f3c", checked: "ok"},
+            gemini: {configured: true, state: "rate_limited", retry_in: 45, key_hint: "a1B2", checked: "ok"}});
+          run = regenerateSection("title");
+          failWith(await takeRequest("/llm/chat/completions"), 429, {kind: "provider_busy", retry_after: 30,
+            error: "The AI services are busy right now. Your draft is safe. Try again in 30 seconds."});
+          await run;
+          await until(() => $("statusText").textContent !== "AI ready", 1500);
+          refreshed.section = $("statusText").textContent;
+          clearTimeout(healthRetryTimer);
+          setStatus(twoSetUp);
+        });
+        lc(() => refreshed.failed === "AI offline · 25 s" && refreshed.written === "AI ready" && refreshed.section === "AI busy · 30 s",
+          "QA re-test 2: after a listing or a section, written or failed, the AI button shows the services' state at once (not AI ready for half a minute)");
+
+        /* -- QA re-test 3. A key turned down while another is saved: the saved one is still in use -- */
+        const REJECTED = "Google Gemini didn't accept this key. Copy the whole key and paste it again.";
+        let kept = null;
+        await act(async () => {
+          const before = statusWith({gemini: {configured: true, state: "ready", key_hint: "a1B2", checked: "ok"}});
+          setStatus(before); setRecord({welcome: "done", tour: "done", copied: true, tourNotice: true});
+          await openSettings("ai");
+          keyPaste.save("AIzaSyFixtureWrongKey0123456789abcdef");
+          (await takeRequest("/settings/ai")).resolve(reply({saved: false, provider: "gemini", label: "Google Gemini",
+            test: {ok: false, kind: "key_rejected", message: REJECTED}, status: before}));
+          await until(() => keyPaste.result.classList.contains("is-err"));
+          kept = {paste: words(keyPaste.result)};
+          // Nothing saved before for Groq: no such sentence.
+          keyPaste.save("gsk_fixtureWrongGroqKey0123");
+          (await takeRequest("/settings/ai")).resolve(reply({saved: false, provider: "groq", label: "Groq",
+            test: {ok: false, kind: "key_rejected", message: "Groq didn't accept this key. Copy the whole key and paste it again."}, status: before}));
+          await until(() => words(keyPaste.result).startsWith("Groq"));
+          kept.none = words(keyPaste.result);
+          // The service's own line says it too.
+          setAiRowOpen(aiRowOf("gemini"), true);
+          aiRowOf("gemini").querySelector(".ai-key").value = "AIzaSyFixtureWrongKey0123456789abcdef";
+          aiRowOf("gemini").querySelector(".ai-save").click();
+          (await takeRequest("/settings/ai")).resolve(reply({saved: false, provider: "gemini", label: "Google Gemini",
+            test: {ok: false, kind: "key_rejected", message: REJECTED}, status: before}));
+          const row = aiRowOf("gemini").querySelector(".key-result");
+          await until(() => row.classList.contains("is-err"));
+          kept.row = words(row);
+          closeSettings();
+        });
+        lc(() => kept.paste === REJECTED + " Your saved key (\u2026a1B2) is still in use." && kept.none === "Groq didn't accept this key. Copy the whole key and paste it again." &&
+          kept.row === REJECTED + " Your saved key (\u2026a1B2) is still in use.",
+          "QA re-test 3: a key turned down while another is saved says Your saved key (…a1B2) is still in use.");
+      } finally {
+        if (clipboard) clipboard.writeText = realWrite;
+        try { if (savedGuideTimes) Object.assign(GUIDE_TIMES, savedGuideTimes); } catch (_) { /* older code */ }
+        try { if (savedSettingsTimes) Object.assign(SETTINGS_TIMES, savedSettingsTimes); } catch (_) { /* older code */ }
+        try { closeWelcome(""); } catch (_) { /* older code */ }
+        try { endTour("skipped"); } catch (_) { /* older code */ }
+        try { closeSettings(); } catch (_) { /* older code */ }
+        for (const frame of frames.splice(0)) frame.remove();
+        aiStatus = savedStatus; detectReply = savedDetect;
+        try { applyAiStatus(savedStatus); } catch (_) { /* older code */ }
+        localStorage.setItem(GUIDE_RECORD, JSON.stringify(GUIDE_DONE));
+        try { loadGuide(); } catch (_) { /* older code */ }
+        for (const [id, value] of Object.entries(savedSeller)) $(id).value = value;
+        for (const [key, value] of Object.entries(savedPrefs)) { if (value === null) localStorage.removeItem(key); else localStorage.setItem(key, value); }
+        try { syncSellerFieldHints(); } catch (_) { /* older code */ }
+        $("appTheme").value = savedTheme; $("appTheme").dispatchEvent(new Event("change"));
+        pending.splice(0);
+        clearToasts();
+        newListing();
+        try { renderGuide(); } catch (_) { /* older code */ }
+        if (soft) {
+          const note = document.createElement("p");
+          note.id = "qa-soft-failures";
+          note.dataset.count = String(softFailures.length);
+          note.textContent = "QA SOFT FAILURES (" + softFailures.length + "): " + softFailures.join(" | ");
+          panel.append(note);
+        }
+      }
     }
     try {
       if (themeReload) {
@@ -128,6 +2366,24 @@
         flushDraft();
         check($("notes").value === "Session-only notes" && !$("generateBtn").disabled, "Blocked storage preserves in-session work and usable controls");
         title.textContent = passed + " blocked-storage browser checks passed";
+        panel.dataset.result = "pass";
+        return;
+      }
+      if (new URLSearchParams(location.search).has("wave2")) {
+        await wave2Checks();
+        title.textContent = passed + " wave 2 checks passed";
+        panel.dataset.result = "pass";
+        return;
+      }
+      if (new URLSearchParams(location.search).has("wave3")) {
+        await wave3Checks();
+        title.textContent = passed + " wave 3 checks passed";
+        panel.dataset.result = "pass";
+        return;
+      }
+      if (new URLSearchParams(location.search).has("qa")) {
+        await qaChecks();
+        title.textContent = passed + " QA fix checks passed";
         panel.dataset.result = "pass";
         return;
       }
@@ -423,12 +2679,12 @@
 
       for (const status of [429, 503]) {
         const attempt = generate(); const failure = await nextRequest();
-        failure.resolve({ok: false, status, json: async () => ({kind: "provider_busy", error: "Providers are busy. Wait 30 seconds, then retry."})});
+        failure.resolve({ok: false, status, json: async () => ({kind: "provider_busy", error: "The AI services are busy right now. Your draft is safe. Try again in 30 seconds."})});
         await attempt;
         check(state.data.title === "Current listing" && !$("generateBtn").disabled, "Provider " + status + " preserves draft and releases controls");
         const errors = document.querySelectorAll(".toast.err p");
         const message = errors[errors.length - 1].textContent;
-        check(message.includes("Wait 30 seconds") && !message.includes("Checklist"), "Provider " + status + " shows wait guidance without key checklist");
+        check(message.includes("Try again in 30 seconds") && !/settings|provider|key/i.test(message), "Provider " + status + " shows wait guidance without key checklist");
       }
 
       const busyGeneration = generate(); const capacityRequest = await nextRequest();
@@ -441,10 +2697,13 @@
 
       $("condition").value = "UNTESTED"; $("condNotes").value = "Cracked casing; not tested";
       const conditionRun = generate(); const conditionRequest = await nextRequest();
-      $("condition").value = "NEW"; $("condNotes").value = "Edited while waiting";
+      check(JSON.parse(conditionRequest.opts.body).messages.at(-1).content.includes("Cracked casing; not tested"), "The model receives the condition notes set when Generate was pressed");
+      $("condition").value = "FOR_PARTS"; $("condNotes").value = "Edited while waiting";
       complete(conditionRequest, {...listing("Current listing"), condition_rating:"NWT", condition_notes:"Works perfectly", item_specifics:{Condition:"New"}}); await conditionRun;
-      check(state.data.condition_rating === "UNTESTED" && state.data.condition_notes === "Cracked casing; not tested", "Generation uses seller condition snapshot instead of AI grade or later edits");
-      check(state.html.includes("Untested") && state.html.includes("Cracked casing; not tested") && !state.html.includes("Works perfectly"), "Preview includes authoritative condition and disclosed flaws");
+      check(state.data.condition_rating === "FOR_PARTS" && state.data.condition_notes === "Edited while waiting" && !("Condition" in state.data.item_specifics),
+        "Generation applies the form's current condition, changed while the AI was writing, never the AI grade");
+      check(state.html.includes("For parts or not working") && state.html.includes("Edited while waiting") && !state.html.includes("Works perfectly") && !state.html.includes("Untested"),
+        "Preview shows the seller's latest condition and notes, not the AI's or the earlier ones");
       $("condition").value = ""; $("condNotes").value = "";
       const unknownRun = generate(); const unknownRequest = await nextRequest();
       complete(unknownRequest, {...listing("Current listing"), condition_rating:"EUC", condition_notes:"Minor wear"}); await unknownRun;
@@ -585,7 +2844,7 @@
         check(state.minedKeywords.length === 0 && savedMining.minedKeywords.length === 0 && !Object.hasOwn(savedMining, "minedAspects") && !$("mineBtn").disabled, "Failed/malformed mining clears stale keywords and omits unused saved aspects: " + failure.status);
         const miningErrors = document.querySelectorAll(".toast.err p");
         const miningMessage = miningErrors[miningErrors.length - 1].textContent;
-        check(miningMessage.includes("own item notes") && !miningMessage.includes("keyset likely"), "Mining failure offers accurate recovery without guessing credentials: " + failure.status);
+        check(miningMessage.includes("just describe the item") && !/keyset|HTTP|retry\b/i.test(miningMessage), "Mining failure offers accurate recovery without guessing credentials: " + failure.status);
       }
 
       newListing(); $("productSearch").value = "Camera";
@@ -679,37 +2938,34 @@
       check(state.lookupCandidates && !state.reference && !$("lookupBtn").disabled && !$("mineBtn").disabled, "The new product search can complete without waiting for obsolete results");
 
       await openSettings();
-      renderKeyStatus({provider_storage:'windows_encrypted',provider_plaintext_present:true});
-      check($("providerStorageHint").textContent.includes('encrypted') && $("providerStorageHint").textContent.includes('Older keys remain'), "Settings explain encrypted saves and remaining legacy plaintext");
+      renderKeyStatus({provider_storage:'windows_encrypted'});
+      check($("settingsKeysNote").textContent === "Keys are saved on this computer, encrypted for your Windows account, and never shown again.",
+        "Settings say saved keys are encrypted for this Windows account and never shown again");
       renderKeyStatus({provider_storage:'plaintext'});
-      check($("providerStorageHint").textContent.includes('plain text'), "Settings truthfully describe plaintext storage fallback");
+      check($("settingsKeysNote").textContent.includes(".env file in the Marteloio folder") && !$("settingsKeysNote").textContent.includes("encrypted"),
+        "Settings truthfully describe plaintext storage fallback");
       renderKeyStatus({ebay:{storage:'plaintext'}});
-      check($("ebayStorageHint").textContent.includes('plain text'), "eBay Settings do not claim encryption on plaintext systems");
-      $("groqKey").value = 'fixture-new-key';
-      $("groqRemove").checked = true; $("groqRemove").dispatchEvent(new Event('change'));
-      check($("groqKey").disabled && $("groqKey").value === 'fixture-new-key', "Key removal disables replacement without discarding typed text");
-      const removingKey = saveKeys(); const settingsRequest = await nextRequest();
-      const settingsPayload = JSON.parse(settingsRequest.opts.body);
-      check(settingsPayload.groq_api_key === '' && settingsPayload.remove_keys.join() === 'groq_api_key', "Saving removal sends explicit selection without the replacement key");
-      check($("saveKeysBtn").textContent === 'Saving keys\u2026', "Saving keys shows its own busy label without restart wording");
-      settingsRequest.resolve(reply({saved:['groq_api_key'],applied:true,cleanup_pending:false,message:'Fixture settings saved'})); await removingKey;
-      check(!$("groqRemove").checked && !$("groqKey").disabled && !$("groqKey").value && !$("saveKeysBtn").disabled, "Successful removal resets controls and clears transient keys");
-      check($("saveKeysBtn").textContent === 'Save keys' && !/restart/i.test($("settingsOverlay").textContent), "Settings no longer mention restarting a router");
-      $("groqKey").value = 'fixture-visible-key';
-      const eye = document.querySelector('.key-eye[data-for="groqKey"]'); eye.click();
-      check($("groqKey").type === 'text' && eye.getAttribute('aria-pressed') === 'true', "Key visibility control explicitly reveals the typed value");
+      check($("settingsKeysNote").textContent.includes(".env file"), "eBay Settings do not claim encryption on plaintext systems");
+      // A service's own key box (formerly the Groq key field): saved and tested, and a late answer keeps newer typing.
+      const groqKeyBox = $("aiKey-groq");
+      groqKeyBox.value = 'gsk_fixtureTypedKey0001';
+      const rowSave = saveAiRow('groq'); const rowRequest = await nextRequest();
+      const rowBody = JSON.parse(rowRequest.opts.body);
+      check(rowRequest.path === '/settings/ai' && rowBody.provider === 'groq' && rowBody.key === 'gsk_fixtureTypedKey0001' && aiRowOf('groq').querySelector('.ai-save').disabled,
+        "Save and test sends that service's own key and is busy until it answers");
+      groqKeyBox.value = 'gsk_newerUnsavedFixture';
+      rowRequest.resolve(reply({saved:true, provider:'groq', label:'Groq', test:{ok:true, ms:640, model:'fixture'}, status:aiStatus})); await rowSave;
+      check(groqKeyBox.value === 'gsk_newerUnsavedFixture' && !aiRowOf('groq').querySelector('.ai-save').disabled, "A late settings save cannot clear newer typed keys");
+      check(!/restart/i.test($("settingsOverlay").textContent), "Settings no longer mention restarting a router");
+      showSettingsTab('ebay');
+      $("ebayClientSecret").value = 'fixture-visible-secret';
+      const eye = document.querySelector('.key-eye[data-for="ebayClientSecret"]'); eye.click();
+      check($("ebayClientSecret").type === 'text' && eye.getAttribute('aria-pressed') === 'true', "Key visibility control explicitly reveals the typed value");
       closeSettings();
-      check(!$("groqKey").value && $("groqKey").type === 'password' && eye.getAttribute('aria-pressed') === 'false', "Closing Settings clears transient secrets and restores masking");
+      check(!groqKeyBox.value && !keyPaste.input.value && !$("ebayClientSecret").value && $("ebayClientSecret").type === 'password' && eye.getAttribute('aria-pressed') === 'false',
+        "Closing Settings clears transient secrets and restores masking");
       await openSettings();
-      check($("groqKey").type === 'password' && !$("groqKey").value, "Reopening Settings cannot retain a revealed key field");
-      $("groqKey").value = 'first-fixture-key';
-      const slowKeySave = saveKeys(); const slowKeyRequest = await nextRequest();
-      $("groqKey").value = 'newer-unsaved-fixture';
-      slowKeyRequest.resolve(reply({saved:['groq_api_key'],applied:true,cleanup_pending:false,message:'Saved earlier values'})); await slowKeySave;
-      check($("groqKey").value === 'newer-unsaved-fixture', "A late settings save cannot clear newer typed keys");
-      const cleanupSave = saveKeys(); const cleanupRequest = await nextRequest();
-      cleanupRequest.resolve(reply({saved:['groq_api_key'],applied:true,cleanup_pending:true,message:'Encrypted save needs plaintext cleanup'})); await cleanupSave;
-      check($("groqKey").value === 'newer-unsaved-fixture' && !$("saveKeysBtn").disabled, "Plaintext cleanup warning preserves entered keys for retry");
+      check($("ebayClientSecret").type === 'password' && !$("ebayClientSecret").value && !groqKeyBox.value, "Reopening Settings cannot retain a revealed key field");
       closeSettings();
 
       await openSettings();
@@ -727,11 +2983,11 @@
       const rejectedSave = saveEbayCreds(); const rejectedRequest = await nextRequest();
       rejectedRequest.resolve({ok:false,status:503,json:async()=>({})}); await rejectedSave;
       check($("ebayClientSecret").value === 'reopened-secret-fixture' && !$("saveEbayCredsBtn").disabled, "An unsuccessful HTTP save preserves credentials and releases the button");
-      holdSettings = true;
+      closeSettings(); holdSettings = true;
       const earlierOpen = openSettings(); const earlierRead = await nextRequest();
       closeSettings(); await openSettings();
-      earlierRead.resolve(reply({groq:{set:true,masked:'STALE-FIXTURE'}})); await earlierOpen;
-      check(!$("groqCurrent").textContent.includes('STALE-FIXTURE'), "Late status from a closed Settings session cannot overwrite current status");
+      earlierRead.resolve(reply({ebay:{client_id:{set:true,masked:'STALE-FIXTURE'}}})); await earlierOpen;
+      check(!$("ebayClientIdCurrent").textContent.includes('STALE-FIXTURE'), "Late status from a closed Settings session cannot overwrite current status");
       holdSettings = true;
       const expiredRead = settingsJSON('/settings', {}, 1).catch(error => error);
       const expiredRequest = await nextRequest(); await new Promise(resolve => setTimeout(resolve, 10));
@@ -766,10 +3022,10 @@
       lateStatsRequest.resolve(reply({feedback_score:999,positive_pct:100})); await lateStats;
       check($("fbScore").value === '25' && $("fbPct").value === '100' && !$("fetchStatsBtn").disabled, "Delayed statistics preserve newer seller edits while updating untouched fields");
       const disconnectedStats = fetchStats(); const disconnectedRequest = await nextRequest();
-      disconnectedRequest.resolve(reply({error:'not connected - complete the OAuth flow first',fallback:true}));
+      disconnectedRequest.resolve(reply({error:"Connect your eBay account in Settings \u203a eBay to fill in your seller numbers.", kind:"ebay_not_connected", fallback:true}));
       await disconnectedStats;
       check($("fbScore").value === '25' && $("fbPct").value === '100' && !$("fetchStatsBtn").disabled &&
-        [...document.querySelectorAll('.toast.err p')].at(-1).textContent.includes('not connected'),
+        $("ebayStatus").classList.contains("is-err") && $("ebayStatus").textContent.includes('Connect your eBay account'),
         "Disconnected stats preserve seller values and report failure instead of success");
       closeSettings();
       check(!$("authCode").value, "Closing Settings clears the transient authorization code");
@@ -785,18 +3041,19 @@
       holdSession = true;
       const invalidSession = ensureToken().catch(error => error); const malformedSession = await nextRequest();
       malformedSession.resolve(reply({token:{invalid:true}}));
-      check((await invalidSession).message.includes('invalid session') && !appToken, "Malformed session tokens are rejected before use");
+      check((await invalidSession).message.includes("Marteloio isn't responding") && !appToken, "Malformed session tokens are rejected before use");
       await ensureToken();
 
       applyDraft({version:1,inputs:{notes:'Backup fixture notes',titleIn:'Backup title'}, mode:'single',
                   html:'<p>Original saved HTML</p>',data:listing('Backup title'),includedItems:[],bundleItems:[]});
-      $("groqKey").value = 'never-export-this-fixture-key';
+      keyPaste.input.value = 'never-export-this-fixture-key'; $("aiKey-gemini").value = 'never-export-this-fixture-key';
       const backupText = draftBackupText();
       check(JSON.parse(backupText).format === 'marteloio-draft' && !backupText.includes('never-export-this-fixture-key'), "Draft backups contain the listing and exclude account key fields");
-      $("groqKey").value = '';
+      keyPaste.input.value = ''; $("aiKey-gemini").value = '';
       $("notes").value = 'Current work before importing';
       const imported = await importDraftFile(new File([backupText], 'fixture-draft.json', {type:'application/json'}));
-      check(imported && $("notes").value === 'Backup fixture notes' && state.data.title === 'Backup title' && state.html === '<p>Original saved HTML</p>' && state.edited, "Draft restore recovers editable content and preserves the original HTML snapshot");
+      check(imported && $("notes").value === 'Backup fixture notes' && state.data.title === 'Backup title' && !state.edited && state.html !== '<p>Original saved HTML</p>' &&
+        state.html.includes('Backup title') && !$("editBadge").classList.contains("visible"), "Draft restore recovers editable content and builds its HTML from it, not in Manually edited mode");
       check(loadHistory().some(item => item.draft.inputs.notes === 'Current work before importing'), "Import saves current work into Recent drafts before replacement");
       const legacyBackup = JSON.parse(backupText); legacyBackup.format = 'lanzalister-draft';
       legacyBackup.draft.inputs.notes = 'Legacy backup notes';
@@ -893,12 +3150,12 @@
       const slowBody = generate(); const slowBodyRequest = await nextRequest();
       slowBodyRequest.resolve(hangingBody(slowBodyRequest)); await tick(); await tick();
       inflight.generate.timedOut = true; inflight.generate.abort(); await slowBody;
-      check(!busyToast && lastToast('err').includes('Generation timed out') && !$("generateBtn").disabled,
+      check(!busyToast && lastToast('err').includes('The AI took too long to answer') && !$("generateBtn").disabled,
         "A deadline while the generation body is read reports a timeout instead of a stuck busy toast");
       const slowMineBody = mineKeywords("Timeout body fixture"); const slowMineRequest = await nextRequest();
       slowMineRequest.resolve(hangingBody(slowMineRequest)); await tick(); await tick();
       inflight.mine.timedOut = true; inflight.mine.abort(); await slowMineBody;
-      check(lastToast('err').includes('Mining timed out') && !$("mineBtn").disabled,
+      check(lastToast('err').includes('eBay took too long to answer') && !$("mineBtn").disabled,
         "A deadline while the keyword body is read reports a timeout");
 
       newListing(); $("notes").value = "Single camera";
@@ -1007,8 +3264,9 @@
         "The preview iframe and HTML editor are wrapped by real tab panels");
       for (const [status, text] of [
         [{ready:true, retry_in:0, providers:[{id:'groq', label:'Groq', configured:true, state:'ready', retry_in:0, model:'fixture-model'}]}, 'AI ready'],
-        [{ready:false, retry_in:12, providers:[{id:'groq', label:'Groq', configured:true, state:'rate_limited', retry_in:12, model:'fixture-model'}]}, 'AI busy — retry in 12s'],
-        [{ready:false, retry_in:0, providers:[{id:'groq', label:'Groq', configured:false, state:'off', retry_in:0, model:''}]}, 'No AI key'],
+        // v0.2.0 wave 3: the pill is a button that says Set up AI, or AI busy with the time.
+        [{ready:false, retry_in:12, providers:[{id:'groq', label:'Groq', configured:true, state:'rate_limited', retry_in:12, model:'fixture-model'}]}, 'AI busy · 12 s'],
+        [{ready:false, retry_in:0, providers:[{id:'groq', label:'Groq', configured:false, state:'off', retry_in:0, model:''}]}, 'Set up AI'],
         [{ready:false, retry_in:0, providers:[{id:'groq', label:'Groq', configured:true, state:'unavailable', retry_in:0, model:'fixture-model'}]}, 'AI offline']]) {
         aiStatus = status; await checkHealth();
         check($("statusText").textContent === text && $("aiStatus").title.includes('Groq'), "AI status pill reads " + text + " with providers in its tooltip");
@@ -1042,8 +3300,8 @@
       const longTitle = "Vintage 35mm film camera body silver with body cap and neck strap tested shutter and meter";
       $("notes").dispatchEvent(new KeyboardEvent("keydown", {key:"Enter", ctrlKey:true, bubbles:true, cancelable:true}));
       const courseRequest = await nextRequest();
-      check(courseRequest.path === "/llm/chat/completions" && $("generateBtn").disabled && !busyToast && steps() === "done,now,,",
-        "Ctrl+Enter in the form generates, with the button as the one busy indicator");
+      check(courseRequest.path === "/llm/chat/completions" && $("generateBtn").disabled && busyToast && !busyToast.isConnected && steps() === "done,now,,",
+        "Ctrl+Enter in the form generates: the button is busy at once, a Working message only if it takes a while");
       complete(courseRequest, {...listing(longTitle), condition_rating:"USED"}); await tick(); await tick();
       check(steps() === "done,done,now," && state.data.model_title_length === longTitle.length && !$("titleShortenedNotice").hidden &&
         $("titleShortenedNotice").textContent.includes("was " + longTitle.length + " characters"),
@@ -1270,7 +3528,7 @@
       const templateRun = generate(); const templateRequest = await nextRequest();
       complete(templateRequest, {...listing("Template camera title"), condition_rating:"USED", condition_notes:"Scratch on lens"}); await templateRun;
       check(!$("saveTemplateBtn").disabled && state.data.condition_rating === "USED", "A generated listing can be saved as a template");
-      $("groqKey").value = "never-in-template-fixture"; $("ebayClientSecret").value = "never-in-template-secret";
+      $("aiKey-groq").value = "never-in-template-fixture"; $("ebayClientSecret").value = "never-in-template-secret";
       $("draftsBtn").click(); $("saveTemplateBtn").click();
       check(!$("templateForm").hidden && $("templateNameInput").value === "Template camera title" && document.activeElement === $("templateNameInput"),
         "Save as template asks for a name inline, defaulting to the title");
@@ -1281,7 +3539,7 @@
         savedTemplate.includedItems.join() === "Camera body" && Number.isSafeInteger(savedTemplate.styleSeed) &&
         !/Scratch on lens|012345678905|never-in-template|USED|condNotes|productBarcode|groq|ebay/i.test(templateRaw),
         "A template keeps the listing and inputs but no condition, barcode, settings or keys");
-      $("groqKey").value = ""; $("ebayClientSecret").value = "";
+      $("aiKey-groq").value = ""; $("ebayClientSecret").value = "";
       $("notes").value = "Different current work"; $("notes").dispatchEvent(new Event("input", {bubbles:true}));
       const pendingBeforeTemplate = pending.length;
       { const stored = JSON.parse(localStorage.getItem(TEMPLATES_KEY)); stored[0].data.model_title_length = 120; localStorage.setItem(TEMPLATES_KEY, JSON.stringify(stored)); renderTemplates(); }
@@ -1310,7 +3568,8 @@
       check(state.template === null && $("templateNotice").hidden, "Generate listing still makes a fresh AI draft and clears the template origin");
       // Seller-owned condition fields stay live after a normal AI generation.
       const conditionNotice = "Condition updated in the listing. Check the description doesn't mention the old condition.";
-      document.querySelectorAll('.toast-item').forEach(item => item.dataset.seen = '1');
+      // A clean slate: a repeated message would count up on the old toast instead of adding one.
+      document.querySelectorAll('.toast-item').forEach(item => { item.dataset.seen = '1'; dismissToast(item); });
       const newToasts = kind => [...document.querySelectorAll('.toast-item:not([data-seen]) .toast.' + kind + ' p')];
       const noticeCount = () => newToasts('note').filter(p => p.textContent === conditionNotice).length;
       const pendingBeforeCondition = pending.length;
@@ -1694,9 +3953,9 @@
           const before = pending.length;
           $("templateSuggestUse").click();
           check(pending.length === before && !inflight.generate && !inflight.section && state.template && state.template.name === "Canon AE-1 body" &&
-            state.data.title === "Canon AE-1 Program 35mm SLR Film Camera Body" && $("condition").value === "" && $("productBarcode").value === "" &&
-            $("templateSuggest").hidden && !$("templateNotice").hidden && loadHistory()[0].draft.inputs.productSearch === "Canon AE-1",
-            "Using the suggestion starts from the template through the normal flow, with zero AI requests and condition cleared");
+            state.data.title === "Canon AE-1 Program 35mm SLR Film Camera Body" && $("condition").value === "FOR_PARTS" && state.data.condition_rating === "FOR_PARTS" &&
+            $("productBarcode").value === "" && $("productSearch").value === "Canon AE-1" && $("templateSuggest").hidden && !$("templateNotice").hidden,
+            "Using the suggestion starts from the template with zero AI requests, keeping the condition the seller chose");
           typeInto("productSearch", "Canon AE-1 Program"); await settle();
           check($("templateSuggest").hidden, "No template suggestion once the draft has a listing");
         });
@@ -1830,14 +4089,14 @@
             const request = await startSection(section);
             request.resolve({ok:true, status:200, json: async () => ({model: "fixture", choices: [{message: {content: typeof reply === "string" ? reply : JSON.stringify(reply)}}]})});
             await tick(); await tick();
-            const message = lastToast("err");
-            check(JSON.stringify(state.data) === before && state.html === htmlBefore && message.startsWith("Could not regenerate the " + section + ".") &&
-              message.includes(reason) && message.includes("Your listing was not changed.") && !message.includes("provider keys") &&
-              !$("regenBtn").disabled && $("regenNotice").hidden,
-              "An invalid " + section + " reply is rejected with a seller-facing message: " + reason);
+            const message = lastToast("err"), title = [...document.querySelectorAll(".toast.err .toast-title")].at(-1)?.textContent || "";
+            check(JSON.stringify(state.data) === before && state.html === htmlBefore && title.startsWith("Couldn't regenerate the " + section) &&
+              message === "The AI's new " + section + " couldn't be used. Choose Regenerate to try again. Your listing was not changed." &&
+              !ListingCore.hasJargon(message) && !$("regenBtn").disabled && $("regenNotice").hidden,
+              "An invalid " + section + " reply is rejected in plain words (" + reason + ")");
           }
           for (const [status, data] of [[429, {error: "Three AI requests are already running in this app. Wait for a current lookup or generation to finish, then retry. Your draft is safe.", kind: "local_busy"}],
-            [429, {error: "Every configured AI provider is busy. Your draft is safe.", kind: "provider_busy", retry_after: 30}]]) {
+            [429, {error: "The AI services are busy right now. Your draft is safe. Try again in 30 seconds.", kind: "provider_busy", retry_after: 30}]]) {
             const request = await startSection("title");
             failWith(request, status, data); await tick(); await tick();
             const message = lastToast("err");
@@ -1878,8 +4137,9 @@
         budgetCase("disabled with reasons", async () => {
           await regenFixture();
           typeInto("htmlOut", "<p>Hand edited</p>");
+          // (v0.2.0 wave 3: its tooltip's words are a second description.)
           check($("regenBtn").disabled && !$("regenHint").hidden && $("regenHint").textContent.includes("hand-edited") &&
-            $("regenBtn").getAttribute("aria-describedby") === "regenHint", "Regenerate is disabled with a reason while the HTML is hand-edited");
+            $("regenBtn").getAttribute("aria-describedby").split(/\s+/)[0] === "regenHint", "Regenerate is disabled with a reason while the HTML is hand-edited");
           const before = aiRequests();
           regenerateSection("title");
           check(aiRequests() === before && lastToast("err").includes("hand-edited"), "A hand-edited listing never sends a section request");
@@ -1966,7 +4226,7 @@
             document.activeElement === $("productSearch"),
             "The visible button starts a new listing with no confirm dialog, saving the previous draft to Recent drafts first");
           let undoToast = liveToasts("ok").at(-1);
-          check(undoToast?.querySelector("p").textContent === "Started a new listing. The previous one is in Drafts → Recent drafts." &&
+          check(undoToast?.querySelector("p").textContent === "Started a new listing. The previous one is in Drafts \u203a Recent drafts." &&
             undoToast.querySelector("button.toast-action")?.textContent === "Undo", "The New listing toast says where the previous draft went and offers Undo");
           undoToast?.querySelector("button.toast-action")?.click();
           check(confirms === 0 && $("notes").value === "New listing fixture: Pentax K1000 body, meter works." && $("productSearch").value === "Pentax K1000" &&
@@ -2064,7 +4324,7 @@
           check(!$("templateSuggest").hidden, "A template dismissed in the previous draft can be suggested again");
 
           // Template notice, nudge once per draft, and a running generation.
-          $("templateSuggestUse").click(); // Using a template asks its own (unchanged) confirm question.
+          $("templateSuggestUse").click(); // The seller's own fields stay, so no confirm question is asked.
           check(!$("templateNotice").hidden && state.template, "Reset fixture: a template draft shows its notice");
           $("downloadBtn").click();
           check(shown($("nextListingNudge")), "Download HTML also offers the next listing");
@@ -2201,8 +4461,8 @@
           // 3. Description -> items -> what's included.
           newListing();
           await act(() => $("modeBundle").click());
-          lc(() => !$("descItemsRow").hidden && $("descToItems").checked && $("descToItems").labels[0].textContent === "Fill the bundle items from this description",
-            "Bundle mode offers Fill the bundle items from this description, ticked by default");
+          lc(() => !$("descItemsRow").hidden && $("descToItems").checked && $("descToItems").labels[0].textContent === "Make a bundle item from each line or bullet of the description",
+            "Bundle mode offers to make a bundle item from each line or bullet of the description, ticked by default");
           await act(() => typeInto($("notes"), "Bundle of:\n- Nintendo Switch console\n- 2x Joy-Con\n- Mario Kart 8\nEverything works, tested this week."));
           lc(() => $("descItemsCount").textContent === "3 items found" && !cards().length, "The count updates live; cards wait until typing pauses");
           await settle();
@@ -2222,7 +4482,7 @@
           await act(() => typeInto($("notes"), "- Mario Kart 8"));
           await settle();
           lc(() => cardNames() === "2x Joy-Con|Mario Kart 8" && $("descItemsCount").textContent === "1 item found", "Auto cards whose name left the description are removed");
-          await act(() => typeInto($("notes"), "Pikmin 4, Splatoon 3"));
+          await act(() => typeInto($("notes"), "Pikmin 4\nSplatoon 3"));
           await settle();
           lc(() => cardNames() === "2x Joy-Con|Mario Kart 8|Pikmin 4|Splatoon 3", "New description items are added after the seller's cards");
           await act(() => $("descToItems").click());
@@ -2238,7 +4498,7 @@
 
           // 4. Brands in bundles.
           newListing();
-          await act(() => { $("modeBundle").click(); typeInto($("notes"), "Nintendo Switch console, Nintendo Switch Pro Controller, Mario Kart 8"); });
+          await act(() => { $("modeBundle").click(); typeInto($("notes"), "Nintendo Switch console\nNintendo Switch Pro Controller\nMario Kart 8"); });
           await settle();
           lc(() => $("singleBrandField").hidden && !$("bundleBrandField").hidden && $("bundleBrandField").querySelector("label").textContent === "Brand(s)" &&
             cards().every(card => card.querySelector(".bi-brand") && card.querySelector(".bi-brand").value === "") && state.bundleItems.every(item => !item.brand),
@@ -2265,7 +4525,7 @@
           lc(() => aiCalls === aiBeforeGenerate + 1 && state.data.item_specifics.Brand === "Nintendo" && Object.keys(state.data.item_specifics)[0] === "Brand" &&
             state.data.bundle_items.every(item => item.brand === "Nintendo") && state.html.includes("Nintendo — Mario Kart 8") && !state.html.includes("Nintendo — Nintendo Switch") &&
             !state.html.includes("Model brand") && !state.html.includes("Invented"), "Single-brand bundle: the listing's Brand and item brands are the seller's, shown as Nintendo — Mario Kart 8");
-          await act(() => typeInto($("notes"), "Nintendo Switch console, Nintendo Switch Pro Controller, Mario Kart 8, Sony DualSense"));
+          await act(() => typeInto($("notes"), "Nintendo Switch console\nNintendo Switch Pro Controller\nMario Kart 8\nSony DualSense"));
           await settle();
           await act(() => typeInto(cards()[3].querySelector(".bi-brand"), "Sony"));
           lc(() => listingBrand() === "" && !$("brandHint").hidden && $("brandSummary").textContent.startsWith("From items: Nintendo, Sony") &&
@@ -2537,6 +4797,441 @@
           }
         }
       }
+
+      /* ---- v0.2.0 bug fixes (the owner's plan numbers) ---- */
+      {
+        // ?soft records failures instead of stopping, so this block can be run against older code.
+        const soft = new URLSearchParams(location.search).has("soft");
+        const softFailures = [];
+        const lc = (fn, label) => {
+          let ok = false;
+          try { ok = Boolean(fn()); } catch (_) { ok = false; }
+          if (ok || !soft) check(ok, label); else softFailures.push(label);
+        };
+        const act = async fn => { try { await fn(); } catch (_) { /* the outcome is checked next */ } };
+        const typeInto = (el, value) => { el.value = value; el.dispatchEvent(new Event("input", {bubbles: true})); };
+        const choose = (el, value) => { el.value = value; el.dispatchEvent(new Event("change", {bubbles: true})); };
+        const settle = () => new Promise(resolve => setTimeout(resolve, 480));
+        const frames = async n => { for (let i = 0; i < n; i++) await new Promise(resolve => requestAnimationFrame(resolve)); };
+        const cards = () => [...document.querySelectorAll("#bundleCards .bundle-card")];
+        const cardNames = () => cards().map(card => card.querySelector(".bi-name").value).join("|");
+        const liveToasts = kind => [...document.querySelectorAll("#toastPanel .toast-item:not(.leaving) .toast." + kind)];
+        const toastWith = (kind, text) => liveToasts(kind).find(card => card.querySelector("p").textContent === text);
+        const actionToast = (kind, label) => liveToasts(kind).find(card => card.querySelector(".toast-action")?.textContent === label);
+        const generateWith = async data => { const run = generate(); complete(await nextRequest(), data); await run; };
+        const clipboard = navigator.clipboard, realWrite = clipboard && clipboard.writeText;
+        const copies = [];
+        if (clipboard) clipboard.writeText = async text => { copies.push(text); };
+        let confirms = 0;
+        const fixtureConfirm = window.confirm;
+        window.confirm = () => { confirms++; return true; };
+        const savedSeller = Object.fromEntries(["memberYear", "fbPct", "logoUrl"].map(id => [id, $(id).value]));
+        pending.splice(0);
+        try {
+          // #2 Bundle items keep their own card's condition and brand after cards are added or deleted.
+          setupBundle(["Camera body", "Battery grip", "Charger"]);
+          $("notes").value = "Bundle id fixture";
+          await act(() => { setBundleConditions(["USED", "NEW", "FOR_PARTS"]); ["Canon", "Meike", ""].forEach((brand, i) => typeInto(cards()[i].querySelector(".bi-brand"), brand)); });
+          await act(() => generateWith({...listing("Bundle id fixture"), bundle_items: [{name: "Canon body", description: "Body."},
+            {name: "BG-5D grip", description: "Grip."}, {name: "OEM charger", description: "Charger."}]}));
+          const itemConditions = () => state.data.bundle_items.map(b => b.condition).join();
+          const itemBrands = () => state.data.bundle_items.map(b => b.brand).join();
+          lc(() => itemConditions() === "Used,New,For parts or not working" && itemBrands() === "Canon,Meike,", "Bundle fixture: each generated item has its card's condition and brand");
+          await act(() => { $("addBundleItemBtn").click(); typeInto(cards().at(-1).querySelector(".bi-name"), "Neck strap"); });
+          lc(() => itemConditions() === "Used,New,For parts or not working" && itemBrands() === "Canon,Meike,", "#2 Adding an item card after generating keeps every item's brand and condition");
+          await act(() => { typeInto($("condNotes"), "Light wear overall"); choose($("condition"), "USED"); });
+          lc(() => itemConditions() === "Used,New,For parts or not working" && state.html.includes("For parts or not working"),
+            "#2 Changing Condition or Condition notes after adding a card keeps each item's own condition, even For parts");
+          await act(() => cards()[0].querySelector(".remove-card").click());
+          await act(() => typeInto($("condNotes"), "Light wear, checked"));
+          lc(() => itemConditions() === "Used,New,For parts or not working" && itemBrands() === "Canon,Meike,",
+            "#2 Deleting a card keeps the other items' conditions and brands, and its own item keeps what it had");
+          await act(() => choose(cards().find(card => card.querySelector(".bi-name").value === "Charger").querySelector("select"), "USED"));
+          lc(() => itemConditions() === "Used,New,Used", "#2 A card's new condition reaches only its own item");
+
+          // #3 Generate again keeps an edited listing in Recent drafts, with Undo and no confirm dialog.
+          newListing(); typeInto($("notes"), "Edits fixture camera");
+          await act(() => generateWith(listing("Edits fixture first title")));
+          await act(() => typeInto($("titleIn"), "Seller's own title"));
+          confirms = 0;
+          await act(() => generateWith(listing("Edits fixture second title")));
+          const savedNotice = () => toastWith("ok", "Saved your edited version in Recent drafts.");
+          lc(() => confirms === 0 && loadHistory().find(entry => entry.draft.inputs?.titleIn === "Seller's own title")?.draft.data?.title === "Edits fixture first title" &&
+            state.data.title === "Edits fixture second title" && savedNotice()?.querySelector(".toast-action")?.textContent === "Undo",
+            "#3 Generate again saves an edited title to Recent drafts and says so with Undo, without a confirm dialog");
+          await act(() => savedNotice().querySelector(".toast-action").click());
+          lc(() => $("titleIn").value === "Seller's own title" && state.data.title === "Edits fixture first title" && confirms === 0 &&
+            loadHistory().some(entry => entry.draft.data?.title === "Edits fixture second title"), "#3 Undo brings the edited version back and keeps the new one in Recent drafts");
+          await act(() => { $("editDescription").value = "Seller-written description"; $("editDescription").dispatchEvent(new Event("input", {bubbles: true})); $("applyContentBtn").click(); });
+          confirms = 0;
+          await act(() => generateWith(listing("Edits fixture third title")));
+          lc(() => confirms === 0 && state.data.title === "Edits fixture third title" &&
+            loadHistory().some(entry => entry.draft.data?.description_paragraphs?.[0] === "Seller-written description"), "#3 Generate again saves applied content edits to Recent drafts");
+          await act(() => typeInto($("htmlOut"), "<p>Hand-written fixture HTML</p>"));
+          confirms = 0;
+          await act(() => generateWith(listing("Edits fixture fourth title")));
+          lc(() => confirms === 0 && !state.edited && state.data.title === "Edits fixture fourth title" &&
+            loadHistory().some(entry => entry.draft.html === "<p>Hand-written fixture HTML</p>" && entry.draft.edited), "#3 Generate again saves hand-edited HTML to Recent drafts, with no confirm dialog");
+          // A clean slate, so a repeated Undo message would be a new toast rather than counting up an old one.
+          document.querySelectorAll(".toast-item").forEach(item => { item.dataset.seen = "1"; dismissToast(item); });
+          await act(() => generateWith(listing("Edits fixture fifth title")));
+          lc(() => state.data.title === "Edits fixture fifth title" && !document.querySelector(".toast-item:not([data-seen]) .toast.ok .toast-action"),
+            "#3 A listing without edits is replaced without an extra Recent drafts copy");
+
+          // #29 Recent drafts hold each listing once.
+          newListing(); typeInto($("notes"), "Dedupe fixture item");
+          await act(() => generateWith(listing("Dedupe fixture title")));
+          newListing();
+          lc(() => loadHistory().filter(entry => entry.draft.inputs?.notes === "Dedupe fixture item").length === 1,
+            "#29 Generate then New listing leaves one Recent drafts entry for the listing, not two");
+          typeInto($("notes"), "Duplicate fixture item"); duplicateDraft(); newListing();
+          lc(() => loadHistory().filter(entry => entry.draft.inputs?.notes === "Duplicate fixture item").length === 2, "#29 Duplicate still keeps its own copy beside the draft");
+          typeInto($("notes"), "Version one");
+          await act(() => generateWith(listing("Version fixture")));
+          typeInto($("notes"), "Version two");
+          await act(() => restoreHistoryDraft(loadHistory().find(entry => entry.draft.inputs?.notes === "Version one").draft));
+          newListing();
+          lc(() => ["Version one", "Version two"].every(notes => loadHistory().some(entry => entry.draft.inputs?.notes === notes)),
+            "#29 Restoring an older version of the current draft keeps the newer version in Recent drafts too");
+
+          // #5 Condition notes applied in Edit content are copied to the form.
+          newListing(); typeInto($("notes"), "Condition notes fixture"); choose($("condition"), "USED"); typeInto($("condNotes"), "Light wear");
+          await act(() => generateWith(listing("Condition notes fixture")));
+          await act(() => { $("editConditionNotes").value = "Small dent on the lid"; $("editConditionNotes").dispatchEvent(new Event("input", {bubbles: true})); $("applyContentBtn").click(); });
+          lc(() => $("condNotes").value === "Small dent on the lid" && state.data.condition_notes === "Small dent on the lid", "#5 Applied condition notes are copied to the form's Condition notes");
+          await act(() => choose($("condition"), "FOR_PARTS"));
+          lc(() => state.data.condition_rating === "FOR_PARTS" && state.data.condition_notes === "Small dent on the lid" && state.html.includes("Small dent on the lid"),
+            "#5 Changing Condition afterwards keeps the applied condition notes");
+
+          // #6 A suggested template keeps the seller's own notes and condition.
+          localStorage.removeItem(TEMPLATES_KEY); renderTemplates();
+          newListing(); typeInto($("productSearch"), "Canon AE-1"); typeInto($("notes"), "Canon AE-1 body. Dent on the prism housing, light meter dead."); choose($("condition"), "FOR_PARTS");
+          await act(() => generateWith({...listing("Canon AE-1 35mm SLR Film Camera Body"), description_paragraphs: ["Canon AE-1 body with a dent on the prism housing."]}));
+          await act(() => saveTemplate("AE-1 with dent"));
+          newListing(); typeInto($("productSearch"), "Canon AE-1"); typeInto($("notes"), "Canon AE-1 body, excellent, meter works, no dents.");
+          choose($("condition"), "EUC"); typeInto($("condNotes"), "Light wear on the top plate");
+          await settle();
+          confirms = 0;
+          await act(() => $("templateSuggestUse").click());
+          lc(() => state.template?.name === "AE-1 with dent" && state.data?.title === "Canon AE-1 35mm SLR Film Camera Body" && confirms === 0 &&
+            $("notes").value === "Canon AE-1 body, excellent, meter works, no dents." && $("condition").value === "EUC" && $("condNotes").value === "Light wear on the top plate" &&
+            state.data.condition_rating === "EUC" && state.data.condition_notes === "Light wear on the top plate" && state.html.includes("Light wear on the top plate"),
+            "#6 Using a suggested template keeps the seller's own notes and condition, with no confirm dialog");
+          lc(() => !/Condition is never saved/.test($("draftsPanel").textContent) && /description is/.test($("templateList").nextElementSibling.textContent),
+            "#6 The Templates hint says the description is kept, so the old item's flaws need checking");
+          localStorage.removeItem(TEMPLATES_KEY); renderTemplates();
+
+          // #7 A restored backup file is not forced into Manually edited mode.
+          newListing(); typeInto($("notes"), "Backup mode fixture");
+          await act(() => generateWith(listing("Backup mode fixture title")));
+          const plainFile = draftBackupText();
+          await act(() => typeInto($("htmlOut"), "<p>Hand-made backup HTML</p>"));
+          const handFile = draftBackupText();
+          newListing();
+          await act(() => importDraftFile(new File([plainFile], "plain.json")));
+          lc(() => !state.edited && !$("editBadge").classList.contains("visible") && state.html.includes("Backup mode fixture title"),
+            "#7 Restoring a backup file of an unedited listing does not switch to Manually edited");
+          await act(() => typeInto($("titleIn"), "Backup mode retitled"));
+          lc(() => state.html.includes("Backup mode retitled"), "#7 After restoring a backup file, a title change reaches Copy HTML");
+          newListing();
+          await act(() => importDraftFile(new File([handFile], "hand.json")));
+          lc(() => state.edited && state.html === "<p>Hand-made backup HTML</p>" && actionToast("note", "Rebuild from content"),
+            "#7 A backup with hand-edited HTML keeps it and offers Rebuild from content");
+          await act(() => actionToast("note", "Rebuild from content").querySelector(".toast-action").click());
+          lc(() => !state.edited && state.html.includes("Backup mode fixture title") && !$("editBadge").classList.contains("visible"), "#7 Rebuild from content builds the HTML from the listing again");
+
+          // #8 A draft whose HTML was cleared never shows or copies another listing's HTML.
+          newListing(); typeInto($("notes"), "Cleared HTML fixture A");
+          await act(() => generateWith(listing("Cleared fixture listing A")));
+          await act(() => typeInto($("htmlOut"), ""));
+          const clearedDraft = JSON.parse(JSON.stringify(snapshotDraft()));
+          newListing(); typeInto($("notes"), "Cleared HTML fixture B");
+          await act(() => generateWith(listing("Cleared fixture listing B")));
+          await act(() => { applyDraft(clearedDraft); renderDraft(); });
+          lc(() => $("htmlOut").value === "" && state.html === "" && $("copyHtmlBtn").disabled && !$("preview").srcdoc.includes("listing B"),
+            "#8 Restoring a draft whose HTML was cleared keeps it empty instead of showing another listing's HTML");
+
+          // #13 Web addresses and emails stop Copy HTML and Download until the seller chooses.
+          lc(() => ["web addresses", "email", "phone numbers", "social media"].every(words => generationRule(15).includes(words)) &&
+            buildSectionSystemPrompt("description").includes(generationRule(15)),
+            "#13 The AI instructions forbid web addresses, emails, phone numbers and social media handles, for full and section requests");
+          newListing(); typeInto($("notes"), "Contact fixture");
+          await act(() => generateWith({...listing("Contact fixture title"), description_paragraphs: ["Great camera.", "Visit www.example.com for more photos."],
+            buyer_notes: ["Email me@example.com with questions."]}));
+          copies.length = 0;
+          await act(async () => { $("copyHtmlBtn").click(); await tick(); await tick(); });
+          lc(() => !copies.length && !state.copied && actionToast("err", "Copy anyway")?.querySelector("p").textContent ===
+            "This listing contains a web address or email (www.example.com). eBay doesn't allow contact details in listings. Remove it with Edit content, then copy.",
+            "#13 Copy HTML names the web address it found and copies nothing");
+          await act(async () => { actionToast("err", "Copy anyway").querySelector(".toast-action").click(); await tick(); await tick(); });
+          lc(() => copies.length === 1 && copies[0] === state.html && state.copied, "#13 Copy anyway copies the listing");
+          {
+            const downloads = [], realDownload = window.downloadText;
+            window.downloadText = (text, type, name) => downloads.push(name);
+            try {
+              await act(() => $("downloadBtn").click());
+              lc(() => !downloads.length && actionToast("err", "Download anyway"), "#13 Download HTML stops at the web address too");
+              await act(() => actionToast("err", "Download anyway").querySelector(".toast-action").click());
+              lc(() => downloads.join() === "ebay-listing.html", "#13 Download anyway downloads the listing");
+            } finally { window.downloadText = realDownload; }
+          }
+          newListing(); typeInto($("notes"), "Clean contact fixture");
+          await act(() => generateWith(listing("Clean contact fixture title")));
+          await act(() => { $("logoUrl").value = "https://i.ebayimg.com/images/g/fixture/s-l500.png"; renderPreview(); });
+          copies.length = 0;
+          await act(async () => { $("copyHtmlBtn").click(); await tick(); await tick(); });
+          lc(() => state.html.includes("https://i.ebayimg.com/images/g/fixture/s-l500.png") && copies.length === 1,
+            "#13 The seller's logo address and the Marteloio signature never stop Copy HTML");
+
+          // #23 What's included: typed text is never lost, and each item becomes its own chip.
+          newListing(); typeInto($("notes"), "Included fixture camera");
+          await act(() => { $("includedInput").value = "Charger, lens cap"; $("includedInput").dispatchEvent(new KeyboardEvent("keydown", {key: "Enter", bubbles: true, cancelable: true})); });
+          lc(() => state.includedItems.join("|") === "Charger|lens cap" && $("includedInput").value === "", "#23 Enter adds one chip for each comma-separated item");
+          $("includedInput").value = "Strap; manual";
+          let includedPrompt = "";
+          await act(async () => {
+            const run = generate(); const request = await nextRequest();
+            includedPrompt = JSON.parse(request.opts.body).messages.at(-1).content;
+            complete(request, listing("Included fixture")); await run;
+          });
+          lc(() => includedPrompt.includes("WHAT'S INCLUDED (list exactly these items in included_items): Charger, lens cap, Strap, manual") &&
+            state.includedItems.join("|") === "Charger|lens cap|Strap|manual" && $("includedInput").value === "", "#23 Generate adds what was typed without Enter, as separate items");
+          await act(() => { $("includedInput").focus(); $("includedInput").value = "Battery"; $("notes").focus(); saveDraft(); flushDraft(); });
+          lc(() => state.includedItems.at(-1) === "Battery" && $("includedInput").value === "" && JSON.parse(localStorage.getItem(DRAFT_KEY)).includedItems.includes("Battery"),
+            "#23 Leaving the field adds what was typed, and it is autosaved");
+
+          // #24 Bundle auto-fill: one card per line or bullet; deleted cards stay deleted; old drafts gain no duplicates.
+          newListing();
+          await act(() => { $("modeBundle").click(); if (!$("descToItems").checked) $("descToItems").click(); });
+          await act(() => typeInto($("notes"), "Lot of 5 Hot Wheels cars, 1990s, some paint chips. Pickup or ship."));
+          await settle();
+          lc(() => $("descToItems").checked && !cards().length, "#24 Auto-fill stays on, and a one-line description with commas and sentences makes no item cards");
+          await act(() => typeInto($("notes"), "Hot Wheels lot:\n- Red Corvette\n- Blue Mustang\n- Green Beetle"));
+          await settle();
+          lc(() => cardNames() === "Red Corvette|Blue Mustang|Green Beetle", "#24 Each bullet makes one card");
+          await act(() => cards()[1].querySelector(".remove-card").click());
+          await act(() => typeInto($("notes"), $("notes").value + "\nShipped boxed."));
+          await settle();
+          lc(() => cardNames() === "Red Corvette|Green Beetle" && $("descItemsCount").textContent === "2 items found",
+            "#24 A card the seller deleted does not come back on the next keystroke, and is not counted");
+          await act(() => { saveDraft(); flushDraft(); applyDraft(JSON.parse(localStorage.getItem(DRAFT_KEY))); renderDraft(); });
+          await act(() => typeInto($("notes"), $("notes").value + " Smoke-free home."));
+          await settle();
+          lc(() => cardNames() === "Red Corvette|Green Beetle", "#24 The deleted card is remembered with the draft");
+          await act(() => {
+            applyDraft({version: 1, mode: "bundle", inputs: {notes: "Mario Kart 8 Deluxe and a Pro Controller, both work"},
+              bundleItems: [{name: "Mario Kart 8 Deluxe", condition: "EUC", notes: ""}, {name: "Nintendo Switch Pro Controller", condition: "GUC", notes: ""}]});
+            renderDraft();
+          });
+          await act(() => typeInto($("notes"), $("notes").value + "."));
+          await settle();
+          lc(() => cardNames() === "Mario Kart 8 Deluxe|Nintendo Switch Pro Controller", "#24 Typing in a bundle draft saved before auto-fill adds no duplicate cards");
+
+          // #25 Conditions vary updates the listing straight away.
+          setupBundle(["Lens", "Cap"]); $("notes").value = "Varies fixture";
+          await act(() => generateWith({...listing("Varies fixture"), bundle_items: [{name: "Lens"}, {name: "Cap"}]}));
+          await act(() => $("condVaries").click());
+          lc(() => state.condVaries && state.html.includes("Conditions vary across the items in this listing.") && $("htmlOut").value === state.html,
+            "#25 Ticking Conditions vary updates the preview and Copy HTML");
+          await act(() => $("condVaries").click());
+          lc(() => !state.condVaries && !state.html.includes("Conditions vary across"), "#25 Unticking it removes the line again");
+
+          // #26 A focused field is never hidden under the Generate bar, on a desktop or a phone.
+          newListing();
+          await frames(2);
+          {
+            const bar = document.querySelector(".gen-bar"), field = $("brand");
+            window.scrollBy(0, field.getBoundingClientRect().bottom - innerHeight + 2);
+            const covered = field.getBoundingClientRect().bottom > bar.getBoundingClientRect().top;
+            field.focus();
+            const r = field.getBoundingClientRect();
+            lc(() => covered && r.bottom <= bar.getBoundingClientRect().top && document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) === field,
+              "#26 Focusing a field under the Generate bar scrolls it above the bar");
+          }
+          let phoneFocusClear = false;
+          await act(async () => {
+            const phone = document.createElement("iframe");
+            phone.style.cssText = "width:390px;height:700px;border:0;display:block";
+            const loaded = new Promise(resolve => phone.onload = resolve);
+            phone.srcdoc = '<!doctype html><html data-theme="light"><head><style>' + document.querySelector("style").textContent + '</style></head><body><main>' +
+              $("inputCard").outerHTML + $("outputCard").outerHTML + '</main></body></html>';
+            panel.append(phone); await loaded;
+            try {
+              const doc = phone.contentDocument, win = phone.contentWindow, bar = doc.querySelector(".gen-bar"), field = doc.getElementById("brand");
+              doc.querySelectorAll(".card").forEach(card => card.style.animation = "none");
+              win.scrollBy(0, field.getBoundingClientRect().bottom - win.innerHeight + 2);
+              const covered = field.getBoundingClientRect().bottom > bar.getBoundingClientRect().top;
+              field.focus();
+              phoneFocusClear = covered && field.getBoundingClientRect().bottom <= bar.getBoundingClientRect().top;
+            } finally { phone.remove(); }
+          });
+          lc(() => phoneFocusClear, "#26 At 390px a focused field is scrolled above the fixed Generate bar");
+
+          // #27 Seller header wording.
+          const thisYear = new Date().getFullYear();
+          newListing(); typeInto($("notes"), "Header fixture");
+          await act(() => generateWith(listing("Header fixture title")));
+          await act(() => { typeInto($("memberYear"), String(thisYear)); typeInto($("fbPct"), "99.6%"); renderPreview(); });
+          lc(() => state.html.includes("Member since " + thisYear + "<") && state.html.includes("99.6% positive") && !state.html.includes("%%") && !/Member for 0/.test(state.html),
+            "#27 The current year reads Member since, and a typed % is not doubled");
+          await act(() => { typeInto($("memberYear"), String(thisYear - 1)); renderPreview(); });
+          lc(() => state.html.includes("Member for 1 year<"), "#27 One year reads Member for 1 year");
+          await act(() => { typeInto($("memberYear"), "15"); typeInto($("fbPct"), "150"); renderPreview(); });
+          lc(() => !/Member (for|since)/.test(state.html) && !state.html.includes("150% positive") &&
+            !$("memberYearError").hidden && $("memberYear").getAttribute("aria-invalid") === "true" && $("memberYear").getAttribute("aria-describedby") === "memberYearError" &&
+            !$("fbPctError").hidden && $("fbPct").getAttribute("aria-invalid") === "true", "#27 A year like 15 or a percentage over 100 is left out, and the field says why");
+          await act(() => { typeInto($("memberYear"), "2014"); typeInto($("fbPct"), "99.8"); renderPreview(); });
+          lc(() => $("memberYearError").hidden && !$("memberYear").hasAttribute("aria-invalid") && $("fbPctError").hidden && !$("fbPct").hasAttribute("aria-invalid") &&
+            state.html.includes("Member for " + (thisYear - 2014) + " years"), "#27 A valid value clears the field hint and shows in the listing");
+
+          // #28 On a phone a new listing scrolls its title into view.
+          {
+            const motionDescriptor = Object.getOwnPropertyDescriptor(motionMedia, "matches");
+            const scrolls = [], realScrollIntoView = Element.prototype.scrollIntoView;
+            let phoneDescriptor, reached = 0;
+            try {
+              Element.prototype.scrollIntoView = function(options) { scrolls.push({el: this, options}); };
+              phoneDescriptor = Object.getOwnPropertyDescriptor(phoneMedia, "matches");
+              Object.defineProperty(phoneMedia, "matches", {configurable: true, value: true});
+              for (const reduced of [false, true]) {
+                Object.defineProperty(motionMedia, "matches", {configurable: true, value: reduced});
+                newListing(); typeInto($("notes"), "Phone fixture");
+                scrolls.length = 0;
+                await act(() => generateWith(listing("Phone fixture title")));
+                if (scrolls.some(({el, options}) => el.contains($("titleIn")) && options?.block === "start" && options.behavior === (reduced ? "auto" : "smooth"))) reached++;
+              }
+            } catch (_) { /* older code has no phone layout check */ }
+            finally {
+              Element.prototype.scrollIntoView = realScrollIntoView;
+              if (motionDescriptor) Object.defineProperty(motionMedia, "matches", motionDescriptor); else delete motionMedia.matches;
+              if (typeof phoneMedia !== "undefined") { if (phoneDescriptor) Object.defineProperty(phoneMedia, "matches", phoneDescriptor); else delete phoneMedia.matches; }
+            }
+            lc(() => reached === 2, "#28 On a phone a new listing scrolls its title into view, smoothly unless reduced motion is on");
+          }
+
+          // #30 Barcode problems are shown, not hidden under the folded More options.
+          // Requests older code sends are answered after each check, so nothing waits forever.
+          const answerLeftovers = async (run, before) => { while (pending.length > before) pending.pop().resolve(reply({items: []})); await run; };
+          newListing(); typeInto($("productSearch"), "Canon AE-1"); $("productBarcode").value = "012345678905"; $("moreOptions").open = false;
+          let pendingBefore = pending.length;
+          let lookupRun = lookupProduct(); await tick(); await tick();
+          lc(() => pending.length === pendingBefore && $("moreOptions").open && document.activeElement === $("productBarcode") &&
+            $("productBarcode").getAttribute("aria-invalid") === "true" && !$("barcodeError").hidden && /searches by this barcode/.test($("barcodeError").textContent),
+            "#30 Look up with a barcode hidden in More options shows and marks the barcode instead of searching it");
+          await answerLeftovers(lookupRun, pendingBefore);
+          let lookupByBarcode = false;
+          await act(async () => {
+            const run = lookupProduct(); const requests = [await nextRequest(), await nextRequest()];
+            lookupByBarcode = requests.every(request => request.path.includes("gtin=012345678905"));
+            requests.forEach(request => request.resolve(reply({items: []}))); await run;
+          });
+          lc(() => lookupByBarcode && $("barcodeError").hidden && !$("productBarcode").hasAttribute("aria-invalid"), "#30 Choosing Look up again searches the barcode now in view");
+          pending.splice(0);
+          newListing(); typeInto($("productSearch"), "Canon AE-1"); $("productBarcode").value = "123"; $("moreOptions").open = false;
+          pendingBefore = pending.length;
+          lookupRun = lookupProduct(); await tick(); await tick();
+          lc(() => pending.length === pendingBefore && $("moreOptions").open && document.activeElement === $("productBarcode") &&
+            $("productBarcode").getAttribute("aria-invalid") === "true" && /8, 12, 13 or 14/.test($("barcodeError").textContent),
+            "#30 A barcode that stops Look up is shown, focused and marked");
+          await answerLeftovers(lookupRun, pendingBefore);
+
+          // #32 Focus after Restore and after deleting a template.
+          newListing(); typeInto($("notes"), "Focus restore fixture");
+          await act(() => generateWith(listing("Focus restore fixture title")));
+          newListing();
+          await act(() => {
+            setDraftsMenu(true, false);
+            const restore = [...$("historyList").querySelectorAll(".history-row")].find(row => row.textContent.includes("Focus restore fixture title")).querySelector("button");
+            restore.focus(); restore.click();
+          });
+          lc(() => $("draftsPanel").hidden && document.activeElement === $("titleIn") && state.data?.title === "Focus restore fixture title",
+            "#32 Restore closes the Drafts panel and puts focus on the restored listing's title");
+          await act(() => {
+            localStorage.setItem(TEMPLATES_KEY, JSON.stringify([{...buildTemplate("First focus template"), id: "focus-1"}, {...buildTemplate("Second focus template"), id: "focus-2"}]));
+            renderTemplates(); setDraftsMenu(true, false);
+            const del = $("templateList").querySelector(".template-delete"); del.focus(); del.click();
+          });
+          lc(() => loadTemplates().map(entry => entry.id).join() === "focus-2" && document.activeElement === $("templateList").querySelector(".template-use"),
+            "#32 Deleting a template moves focus to the next template");
+          await act(() => { const del = $("templateList").querySelector(".template-delete"); del.focus(); del.click(); });
+          lc(() => !loadTemplates().length && document.activeElement === $("draftsBtn"), "#32 Deleting the last template moves focus to the Drafts button");
+          setDraftsMenu(false, false); localStorage.removeItem(TEMPLATES_KEY); renderTemplates();
+
+          // #33 A double-click on Copy HTML leaves the label as it was.
+          newListing(); typeInto($("notes"), "Double copy fixture");
+          await act(() => generateWith(listing("Double copy fixture title")));
+          await act(async () => { $("copyHtmlBtn").click(); $("copyHtmlBtn").click(); await tick(); await tick(); });
+          await new Promise(resolve => setTimeout(resolve, 1700));
+          lc(() => $("copyHtmlBtn").querySelector(".launch-label").textContent === "Copy HTML" && !$("copyHtmlBtn").classList.contains("launched"),
+            "#33 After a double-click, Copy HTML returns to its label");
+
+          // #34 Restart advice works on every system.
+          lc(() => ![...document.scripts].some(script => /\.bat\b/i.test(script.textContent)) &&
+            [...document.scripts].some(script => script.textContent.includes("Restart Marteloio (close it and open it again)")),
+            "#34 Restart advice says to close and open Marteloio again, with no .bat file");
+
+          // The browser waits up to 180 s for the AI and refuses notes over 40,000 characters.
+          newListing(); typeInto($("notes"), "x".repeat(40001));
+          pendingBefore = pending.length;
+          const longNotesRun = generate(); await tick(); await tick();
+          lc(() => pending.length === pendingBefore && !inflight.generate && document.activeElement === $("notes") &&
+            liveToasts("err").at(-1)?.querySelector("p").textContent === "These notes are too long for one listing (over 40,000 characters). Shorten them and try again.",
+            "Notes over 40,000 characters are refused before sending, with the notes field focused");
+          while (pending.length > pendingBefore) complete(pending.pop(), listing("Overlong notes fixture"));
+          await longNotesRun;
+          {
+            const deadlines = [], realSetTimeout = window.setTimeout;
+            window.setTimeout = (fn, ms, ...rest) => { deadlines.push(ms); return realSetTimeout(fn, ms, ...rest); };
+            let generateWait = false;
+            try {
+              newListing(); typeInto($("notes"), "Deadline fixture");
+              await act(() => generateWith(listing("Deadline fixture title")));
+              generateWait = deadlines.includes(180000);
+              deadlines.length = 0;
+              await act(async () => { const run = regenerateSection("title"); complete(await nextRequest(), {title: "Deadline fixture new title"}); await run; });
+            } finally { window.setTimeout = realSetTimeout; }
+            lc(() => generateWait && deadlines.includes(180000) && !deadlines.includes(120000), "Generate and section regenerate wait up to 180 seconds for the AI");
+          }
+
+          // New listing cancels a waypoint landing that Generate scheduled but had not started (the flaky check's race).
+          {
+            const realLanding = window.courseLanding;
+            let landings = 0;
+            window.courseLanding = () => { landings++; return false; };
+            try {
+              newListing(); typeInto($("notes"), "Landing fixture");
+              await act(() => generateWith(listing("Landing fixture title")));
+              newListing();
+              await frames(3);
+              lc(() => landings === 0 && !document.querySelector(".course-flight") && $("rulerWaypoint").style.opacity === "",
+                "New listing cancels a waypoint landing Generate had scheduled, so none starts on the new listing");
+              typeInto($("notes"), "Landing fixture two");
+              await act(() => generateWith(listing("Landing fixture two")));
+              await frames(3);
+              lc(() => landings === 1, "Without New listing the scheduled landing still runs, once");
+            } finally { window.courseLanding = realLanding; }
+          }
+        } finally {
+          window.confirm = fixtureConfirm;
+          if (clipboard) clipboard.writeText = realWrite;
+          for (const [id, value] of Object.entries(savedSeller)) { $(id).value = value; $(id).dispatchEvent(new Event("input", {bubbles: true})); }
+          localStorage.removeItem(TEMPLATES_KEY); renderTemplates();
+          setDraftsMenu(false, false);
+          pending.splice(0);
+          newListing();
+          if (soft) {
+            const note = document.createElement("p");
+            note.id = "v020-soft-failures";
+            note.dataset.count = String(softFailures.length);
+            note.textContent = "V0.2.0 SOFT FAILURES (" + softFailures.length + "): " + softFailures.join(" | ");
+            panel.append(note);
+          }
+        }
+      }
+
+      await wave2Checks();
+      await wave3Checks();
+      await qaChecks();
 
       title.textContent = passed + " browser regression checks passed";
       panel.dataset.result = "pass";

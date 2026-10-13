@@ -10,8 +10,11 @@ import math
 import unicodedata
 from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 import hashlib
+import http.client
 import os
 import secrets
+import socket
+import sys
 import tempfile
 import socketserver
 import threading
@@ -24,15 +27,21 @@ from base64 import b64decode, b64encode
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import ai_providers
+import app_paths
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-ENV_PATH = os.path.join(BASE_DIR, ".env")
-TOKEN_PATH = os.path.join(BASE_DIR, ".ebay_token.json")
-SECRETS_PATH = os.path.join(BASE_DIR, ".marteloio-secrets.enc")
+BASE_DIR = app_paths.APP_DIR    # the code
+DATA_DIR = app_paths.DATA_DIR   # keys, settings and logs (the same folder for a ZIP copy)
+VERSION = app_paths.VERSION
+BUILD = app_paths.build_id(BASE_DIR)
+INSTALLED = app_paths.INSTALLED
+ENV_PATH = os.path.join(DATA_DIR, ".env")
+TOKEN_PATH = os.path.join(DATA_DIR, ".ebay_token.json")
+SECRETS_PATH = os.path.join(DATA_DIR, ".marteloio-secrets.enc")
+SETTINGS_PATH = os.path.join(DATA_DIR, "settings.json")
 # Pre-rename store: read while the new file does not exist, removed after the
 # first verified write of the new file.
 LEGACY_SECRETS_PATH = os.path.join(BASE_DIR, ".lanzalister-secrets.enc")
-PORT = int(os.environ.get("PORT", "8080"))
+PORT = 8080
 SESSION_TOKEN = secrets.token_urlsafe(32)
 MAX_BODY = 128 * 1024
 MAX_UPSTREAM_BODY = 4 * 1024 * 1024
@@ -43,10 +52,12 @@ _OAUTH_LOCK = threading.Lock()
 _USER_TOKEN_LOCK = threading.RLock()
 _ENV_LOCK = threading.RLock()
 _COMPLETION_SLOTS = threading.BoundedSemaphore(3)
-# The whole provider fallback must finish before the browser stops waiting (120 s).
-COMPLETION_DEADLINE = 90
+_SETTINGS_LOCK = threading.Lock()
+# The whole provider fallback must finish before the browser stops waiting (180 s).
+COMPLETION_DEADLINE = 160
 # Answer budget for a full listing; a request may ask for less (64 or more).
 COMPLETION_MAX_TOKENS = 3000
+MAX_NOTES = 40000
 
 
 def atomic_write(path, text):
@@ -85,7 +96,43 @@ class UpstreamError(ValueError):
     """An upstream service answered with something unreadable (HTTP 502, fixed text)."""
 
 
-UPSTREAM_ERROR_MESSAGE = "eBay returned an unreadable response. Try again shortly."
+class RequestError(ValueError):
+    """A request the app can't serve, with a plain message and a kind for the UI."""
+
+    def __init__(self, message, kind="invalid_request", status=400):
+        super().__init__(message)
+        self.kind = kind
+        self.status = status
+
+
+class EbayAuthError(RuntimeError):
+    """eBay's token service turned down the request (HTTP 400/401): usually the keys."""
+
+    def __init__(self, code):
+        super().__init__("eBay rejected the request: HTTP %d" % code)
+        self.code = code
+
+
+UPSTREAM_ERROR_MESSAGE = "eBay sent an answer Marteloio couldn't read. Try again in a minute, or just describe the item."
+SERVER_ERROR_MESSAGE = "Marteloio couldn't finish this. Try again in a minute."
+# Menu paths use the single right-pointing angle quote (U+203A).
+EBAY_MESSAGES = {
+    "ebay_not_configured": "Look up needs an eBay key (optional). Add one in Settings \u203a eBay, or just describe the item.",
+    "ebay_auth": "eBay didn't accept your eBay keys. Check the Client ID and Client Secret in Settings \u203a eBay.",
+    "ebay_unavailable": "eBay couldn't be reached. Try again in a minute, or just describe the item.",
+    "ebay_listing_gone": "This listing is no longer on eBay. Pick another one.",
+    "ebay_busy": "Marteloio is already looking up several items. Wait a moment, then try again.",
+    "ebay_storage": "Marteloio couldn't read your saved eBay keys. This happens after moving to another PC "
+                    "or Windows account. Enter them again in Settings \u203a eBay.",
+}
+EBAY_STATUS = {"ebay_auth": 502, "ebay_unavailable": 502, "ebay_storage": 503}
+INVALID_BARCODE_MESSAGE = "Check the barcode: it should have 8, 12, 13 or 14 digits."
+NOTES_TOO_LONG_MESSAGE = ("These notes are too long for one listing (over 40,000 characters). "
+                          "Shorten them and try again.")
+
+
+def ebay_error(kind):
+    return {"error": EBAY_MESSAGES[kind], "kind": kind, "fallback": True}
 
 
 def env_lines(text):
@@ -96,7 +143,13 @@ def env_lines(text):
     return [line[:-1] if line.endswith("\r") else line for line in lines]
 
 
-NO_PROVIDER_MESSAGE = "No AI provider key is configured. Add a key in Settings to start generating."
+NO_PROVIDER_MESSAGE = "Connect an AI service first. It takes about 2 minutes with a free Google key."
+# Generation errors that need a plain sentence of their own (all 503).
+SERVICE_MESSAGES = {
+    "all_disabled": "Every AI service is switched off. Turn one on in Settings \u203a AI.",
+    "freellmapi_not_running": "FreeLLMAPI isn't running on this computer. Start it, then try again.",
+    "freellmapi_no_services": "FreeLLMAPI is running but has no AI services yet. Add a key on its Keys page, then try again.",
+}
 
 
 def provider_failure(reason, retry_after=None):
@@ -105,23 +158,29 @@ def provider_failure(reason, retry_after=None):
     Never echo upstream bodies or credentials."""
     if reason == "no_provider":
         return 503, {"error": NO_PROVIDER_MESSAGE, "kind": "no_provider"}
+    if reason in SERVICE_MESSAGES:
+        return 503, {"error": SERVICE_MESSAGES[reason], "kind": reason}
     if reason in ("rate_limited", "unavailable"):
         seconds = 30 if reason == "rate_limited" else 15
         try:
             seconds = max(1, min(int(retry_after), 3600))
         except (TypeError, ValueError, OverflowError):
             pass
-        message = ("The AI providers are rate-limited right now." if reason == "rate_limited" else
-                   "The AI providers are temporarily unavailable or busy.")
+        wait = "%d second%s" % (seconds, "" if seconds == 1 else "s")
+        message = ("The AI services are busy right now. Your draft is safe. Try again in %s." % wait
+                   if reason == "rate_limited" else
+                   "The AI services couldn't be reached. Your draft is safe. "
+                   "Check your internet connection and try again in %s." % wait)
         return (429 if reason == "rate_limited" else 503), {
-            "error": message + " Your draft is safe. Wait at least %d seconds, then try again. Provider limits may take longer to reset." % seconds,
-            "kind": "provider_busy", "retry_after": seconds}
+            "error": message, "kind": "provider_busy", "retry_after": seconds}
     if reason == "key_rejected":
-        return 502, {"error": "The AI provider rejected authentication. Check the provider keys in Settings.", "kind": "provider_auth"}
+        return 502, {"error": "Your AI key was turned down. Open Settings \u203a AI and paste a new key.",
+                     "kind": "provider_auth"}
     if reason == "timeout":
-        return 504, {"error": "The AI providers did not answer in time. Your draft is safe. Wait a moment, then try again.",
+        return 504, {"error": "The AI took too long to answer. Your draft is safe. Try again in a moment.",
                      "kind": "provider_timeout"}
-    return 502, {"error": "The AI provider could not process this request. Try again with shorter notes. Your draft is safe.", "kind": "provider_request"}
+    return 502, {"error": "The AI couldn't write this listing. Your draft is safe. Try again; "
+                          "if it keeps happening, shorten your notes.", "kind": "provider_request"}
 
 OAUTH_TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token"
 TRADING_URL = "https://api.ebay.com/ws/api.dll"
@@ -129,15 +188,8 @@ BROWSE_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
 
 
 def load_env():
-    if not os.path.exists(ENV_PATH):
-        return
-    with open(ENV_PATH, "r", encoding="utf-8-sig") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            k, _, v = line.partition("=")
-            os.environ.setdefault(k.strip(), v.strip())
+    for key, value in app_paths.read_env_file(ENV_PATH).items():
+        os.environ.setdefault(key, value)
 
 
 # ---------------- DPAPI at-rest encryption (Windows only) ----------------
@@ -234,13 +286,27 @@ def secrets_read_path():
     return SECRETS_PATH
 
 
+class StoreUnreadable(ValueError):
+    """The store was read but can't be used: decryption, base64, JSON or its structure failed."""
+
+
 def _store_read_raw(path=None):
     path = path or secrets_read_path()
     if not os.path.exists(path):
         return {}
-    with open(path, "r", encoding="utf-8") as f:
-        blob = b64decode(f.read().strip())
-    data = json.loads(dpapi_decrypt(blob).decode("utf-8"))
+    # A failure to open or read (file in use, OneDrive file not downloaded) is an OSError
+    # and leaves the store alone; only a store that was read but is unusable is replaced.
+    with open(path, "rb") as f:
+        raw = f.read()
+    try:
+        data = json.loads(dpapi_decrypt(b64decode(raw.strip())).decode("utf-8"))
+        _check_store(data)
+    except Exception as error:
+        raise StoreUnreadable(type(error).__name__) from error
+    return data
+
+
+def _check_store(data):
     if not isinstance(data, dict):
         raise ValueError("Invalid credential store structure")
     for name in ("ebay_client_id", "ebay_client_secret"):
@@ -248,16 +314,61 @@ def _store_read_raw(path=None):
             raise ValueError("Invalid stored eBay credential")
     if data.get("token") is not None and not isinstance(data["token"], dict):
         raise ValueError("Invalid stored token structure")
-    return data
+    try:
+        provider_environment({}, data)
+    except OSError:
+        raise ValueError("Invalid stored provider keys") from None
 
 
-def _store_write(data):
+def _store_write(data, unreadable=None):
+    """Encrypt, verify and replace the store. `unreadable` = (path, error) of a store
+    that could not be read: it is kept under a new name once the new one is ready."""
     blob = dpapi_encrypt(json.dumps(data).encode("utf-8"))
     if json.loads(dpapi_decrypt(blob).decode("utf-8")) != data:
         return False
+    if unreadable:
+        _set_aside(*unreadable)
     atomic_write(SECRETS_PATH, b64encode(blob).decode("ascii"))
     _retire_legacy_store(data)
     return True
+
+
+def _set_aside(path, error):
+    """Rename an unreadable store to <name>.unreadable-<YYYYmmdd-HHMMSS>.enc; never delete it."""
+    if not os.path.exists(path):
+        return
+    folder, stem = os.path.split(path)
+    stem = stem[:-4] if stem.endswith(".enc") else stem
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    target, n = os.path.join(folder, "%s.unreadable-%s.enc" % (stem, stamp)), 1
+    while os.path.exists(target):
+        n += 1
+        target = os.path.join(folder, "%s.unreadable-%s-%d.enc" % (stem, stamp, n))
+    os.rename(path, target)
+    print("[secrets] The saved keys could not be read: %s. Kept it as %s and started a new store."
+          % (_store_problem(error), os.path.basename(target)), file=sys.stderr, flush=True)
+
+
+def _store_problem(error):
+    """Why a store that was read can't be used, for relay.log (never key values)."""
+    if isinstance(error.__cause__, OSError):
+        return "Windows could not decrypt it; it was probably saved on another PC or Windows account"
+    return "it is damaged (%s)" % error
+
+
+def _store_update(change):
+    """Read, change and save the store for a seller's own save (hold _STORE_LOCK).
+
+    An unreadable store does not block the save: it is kept under a new name and a
+    new store is started, because nothing in it can be used any more."""
+    path = secrets_read_path()
+    try:
+        data, unreadable = _store_read_raw(path), None
+    except StoreUnreadable as error:
+        data, unreadable = {}, (path, error)
+    change(data)
+    if not _store_write(data, unreadable):
+        raise OSError("Could not verify the encrypted store")
 
 
 def _retire_legacy_store(data):
@@ -305,19 +416,18 @@ def get_ebay_cred(name):
 def set_ebay_creds(cid=None, csec=None):
     if not dpapi_available():
         return False
-    with _STORE_LOCK:
-        try:
-            data = _store_read_raw()
-        except Exception:
-            return False
+
+    def change(data):
         if cid:
             data["ebay_client_id"] = cid
         if csec:
             data["ebay_client_secret"] = csec
+    with _STORE_LOCK:
         try:
-            return _store_write(data)
+            _store_update(change)
         except Exception:
             return False
+    return True
 
 
 def read_token():
@@ -430,9 +540,11 @@ def exchange_grant(body):
             "Authorization": "Basic " + basic,
         })
     except urllib.error.HTTPError as e:
-        msg = "eBay rejected the request: HTTP %d" % e.code
+        code = e.code
         e.close()
-        raise RuntimeError(msg)
+        if code in (400, 401):
+            raise EbayAuthError(code) from None
+        raise RuntimeError("eBay rejected the request: HTTP %d" % code) from None
     try:
         data = json.loads(text)
     except ValueError:
@@ -574,7 +686,7 @@ def normalize_gtin(value):
 def browse_search(keywords, limit, gtin=""):
     token = app_token_fresh()
     if not token:
-        return {"error": "Could not obtain an eBay application token", "fallback": True}
+        return ebay_error("ebay_not_configured")  # the Client Secret is missing
     # Default Browse results already contain titles. Aggregate aspect refinements
     # are not seller-item facts and are unused by the listing builder.
     params = {"limit": str(limit)}
@@ -615,13 +727,16 @@ REFERENCE_ASPECTS = {'brand', 'model', 'mpn', 'gtin', 'upc', 'ean', 'isbn',
     'focal length', 'maximum aperture', 'compatible brand', 'compatible model'}
 
 
+EBAY_NO_DETAILS_MESSAGE = "This listing has no product details Marteloio can use. Pick another one, or just describe the item."
+
+
 def browse_reference(item_id):
     import re
     if not isinstance(item_id, str) or not re.fullmatch(r'v1\|[0-9]{1,20}\|[0-9]{1,20}', item_id):
-        raise ValueError('Invalid eBay item identifier')
+        raise RequestError("That eBay listing number isn't valid. Pick a listing from the search results.")
     token = app_token_fresh()
     if not token:
-        raise ValueError('Could not obtain an eBay application token')
+        raise UpstreamError('Could not obtain an eBay application token')
     status, text = http_get('https://api.ebay.com/buy/browse/v1/item/' + urllib.parse.quote(item_id, safe=''),
         timeout=15, headers={'Authorization': 'Bearer ' + token, 'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US'})
     try:
@@ -629,13 +744,14 @@ def browse_reference(item_id):
     except ValueError:
         raise UpstreamError('Invalid eBay listing response') from None
     if status != 200 or not isinstance(data, dict) or data.get('errors') or data.get('itemId') != item_id:
-        raise ValueError('Could not retrieve the selected eBay listing')
+        raise UpstreamError('Could not retrieve the selected eBay listing')
     title, url = data.get('title'), data.get('itemWebUrl')
+    no_details = RequestError(EBAY_NO_DETAILS_MESSAGE, "ebay_no_details", 422)
     if not isinstance(title, str) or not title.strip() or not isinstance(url, str):
-        raise ValueError('Selected listing has no usable source information')
+        raise no_details
     link = urllib.parse.urlsplit(url)
     if link.scheme != 'https' or link.netloc not in ('www.ebay.com', 'ebay.com') or not link.path.startswith('/itm/') or link.path.rstrip('/').split('/')[-1] != item_id.split('|')[1]:
-        raise ValueError('Selected listing has an invalid source link')
+        raise no_details
     specs = {}
     for key in ('brand', 'mpn', 'gtin'):
         value = data.get(key)
@@ -643,7 +759,7 @@ def browse_reference(item_id):
             specs[key.upper() if key != 'brand' else 'Brand'] = value.strip()[:1000]
     aspects = data.get('localizedAspects', [])
     if not isinstance(aspects, list):
-        raise ValueError('Invalid listing specifications')
+        raise UpstreamError('Invalid listing specifications')
     for aspect in aspects[:100]:
         if not isinstance(aspect, dict):
             continue
@@ -653,7 +769,7 @@ def browse_reference(item_id):
             if name.strip().lower() not in {k.lower() for k in specs}:
                 specs[name.strip()] = value.strip()[:1000]
     if not specs:
-        raise ValueError('This listing has no supported product specifications. Select another result or use your own observations.')
+        raise no_details
     return {'kind': 'ebay-listing', 'source': {'item_id': item_id,
         'title': title.strip()[:300], 'url': urllib.parse.urlunsplit((link.scheme, link.netloc, link.path, '', ''))},
         'at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
@@ -662,7 +778,7 @@ def browse_reference(item_id):
 
 def try_search(keywords, limit, gtin=""):
     # Share identical work, but do not hold a global lock across network I/O.
-    busy = {"error": "eBay search is busy. Please retry shortly.", "fallback": True}
+    busy = ebay_error("ebay_busy")
     with _SEARCH_LOCK:
         generation = _SEARCH_GENERATION
         key = (generation, ('gtin', gtin) if gtin else ('q', " ".join(keywords.casefold().split())), limit)
@@ -689,12 +805,14 @@ def try_search(keywords, limit, gtin=""):
             return result
         try:
             result = browse_search('', limit, gtin=gtin) if gtin else browse_search(keywords, limit)
+        except EbayAuthError:
+            result = ebay_error("ebay_auth")
         except urllib.error.HTTPError as e:
-            result = {"error": "eBay search returned HTTP %d; check credentials and API access" % e.code,
-                      "fallback": True}
+            # The search itself refused the keyset (no Browse access) or eBay is down.
+            result = ebay_error("ebay_auth" if e.code in (401, 403) else "ebay_unavailable")
             e.close()
         except Exception:
-            result = {"error": "eBay search is temporarily unavailable. Please retry.", "fallback": True}
+            result = ebay_error("ebay_unavailable")
         with _SEARCH_LOCK:
             if result and "error" not in result and generation == _SEARCH_GENERATION:
                 if len(_SEARCH_CACHE) >= 128:
@@ -711,7 +829,9 @@ def try_search(keywords, limit, gtin=""):
 
 # ---------------- LLM key settings ----------------
 
-SETTING_KEYS = ("GROQ_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY")
+SETTING_KEYS = ("GROQ_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY",
+                # FreeLLMAPI's address is stored like a key: it can carry an access token.
+                "FREELLMAPI_KEY", "FREELLMAPI_URL")
 
 
 def provider_environment(env, stored=None):
@@ -739,7 +859,9 @@ def effective_provider_environment():
     return provider_environment(env)
 
 
-PROVIDER_STORE_ERROR = "Encrypted provider settings could not be read. Use the original Windows account or restore the store."
+PROVIDER_STORE_ERROR = ("Marteloio couldn't read your saved keys. This happens after moving to another PC "
+                        "or Windows account. Paste your key again in Settings \u203a AI.")
+STORAGE_WRITE_ERROR = "Marteloio couldn't save this. Check that its folder isn't read-only or full, then try again."
 
 
 def save_provider_settings(updates):
@@ -747,7 +869,8 @@ def save_provider_settings(updates):
 
     Existing .env keys are not migrated at startup. Only keys explicitly saved
     through Settings are changed. Empty stored values prevent inherited keys
-    from being reactivated after an explicit removal.
+    from being reactivated after an explicit removal. An unreadable store is
+    set aside (see _store_update), so a new key can always be saved.
     """
     if not set(updates) <= set(SETTING_KEYS):
         raise ValueError("Unsupported provider setting")
@@ -755,14 +878,13 @@ def save_provider_settings(updates):
     if not dpapi_available():
         write_env(updates)
         return {"encrypted": False, "cleanup_pending": False}
+
+    def change(store):
+        store["provider_keys"] = dict(store.get("provider_keys", {}), **updates)
     with _ENV_LOCK:
         with _STORE_LOCK:
             try:
-                store = _store_read_raw()
-                provider_environment({}, store)  # Validate without reading or modifying another store.
-                store["provider_keys"] = dict(store.get("provider_keys", {}), **updates)
-                if not _store_write(store):
-                    raise OSError("Could not verify encrypted provider settings.")
+                _store_update(change)
             except Exception as error:
                 raise OSError("Could not save encrypted provider settings. Check the existing store and permissions.") from error
         try:
@@ -773,17 +895,7 @@ def save_provider_settings(updates):
 
 
 def read_env():
-    data = {}
-    if not os.path.exists(ENV_PATH):
-        return data
-    with open(ENV_PATH, "r", encoding="utf-8-sig") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line:
-                continue
-            k, _, v = line.partition("=")
-            data[k.strip()] = v.strip()
-    return data
+    return app_paths.read_env_file(ENV_PATH)
 
 
 def write_env(updates):
@@ -825,6 +937,13 @@ def rewrite_env_without(drop_keys):
         atomic_write(ENV_PATH, "\n".join(out) + "\n")
 
 
+def _token_like(tok):
+    """A JSON object holding an eBay access or refresh token, every token field a string."""
+    fields = ("access_token", "refresh_token", "token_type")
+    return (isinstance(tok, dict) and any(isinstance(tok.get(k), str) and tok[k].strip() for k in fields[:2])
+            and all(isinstance(tok[k], str) for k in fields if k in tok))
+
+
 def migrate_secrets():
     """Move plaintext eBay creds/token into the DPAPI store (idempotent)."""
     if not dpapi_available():
@@ -839,6 +958,10 @@ def migrate_secrets():
             with open(TOKEN_PATH, "r", encoding="utf-8") as f:
                 plain_token = json.load(f)
         except (ValueError, OSError):
+            plain_token = None
+        if not _token_like(plain_token):
+            # Copying anything else in would make the whole store unreadable.
+            print("[secrets] .ebay_token.json is not a saved eBay sign-in, so it was left in place.")
             plain_token = None
     if not cid and not csec and plain_token is None:
         return
@@ -881,6 +1004,95 @@ def mask_key(value):
     return value[:4] + "\u2026" + value[-4:]
 
 
+# ---------------- settings.json (non-secret preferences) ----------------
+#   {"ai": {"groq": {"enabled": false}},                          - the Use switch in Settings > AI
+#    "checked": {"groq": {"key_hint": "WXYZ", "result": "failed"}}} - a failed key check, kept
+#   across restarts; key_hint is the key's last four characters, already shown in /ai/status.
+
+def read_settings():
+    try:
+        with open(SETTINGS_PATH, encoding="utf-8") as handle:
+            data = json.loads(handle.read(65536))
+    except (OSError, ValueError, RecursionError):
+        return {}  # Missing or damaged: every switch is on.
+    return data if isinstance(data, dict) else {}
+
+
+def disabled_providers():
+    ai = read_settings().get("ai")
+    if not isinstance(ai, dict):
+        return frozenset()
+    return frozenset(name for name, entry in ai.items()
+                     if name in ai_providers.PROVIDERS and isinstance(entry, dict) and entry.get("enabled") is False)
+
+
+def set_provider_enabled(name, enabled):
+    with _SETTINGS_LOCK:
+        data = read_settings()
+        ai = data["ai"] if isinstance(data.get("ai"), dict) else {}
+        entry = ai[name] if isinstance(ai.get(name), dict) else {}
+        ai[name] = dict(entry, enabled=bool(enabled))
+        data["ai"] = ai
+        atomic_write(SETTINGS_PATH, json.dumps(data, indent=2) + "\n")
+
+
+def failed_checks():
+    """{provider: key hint} of failed key checks saved before a restart."""
+    checked = read_settings().get("checked")
+    if not isinstance(checked, dict):
+        return {}
+    return {name: entry["key_hint"] for name, entry in checked.items()
+            if name in ai_providers.PROVIDERS and isinstance(entry, dict) and entry.get("result") == "failed"
+            and isinstance(entry.get("key_hint"), str) and entry["key_hint"]}
+
+
+def update_checks(changes):
+    """Save failed checks ({provider: key hint}) or forget them ({provider: None}); writes only on a change."""
+    with _SETTINGS_LOCK:
+        data = read_settings()
+        before = data["checked"] if isinstance(data.get("checked"), dict) else {}
+        checked = dict(before)
+        for name, hint in changes.items():
+            if hint:
+                checked[name] = {"key_hint": hint, "result": "failed"}
+            else:
+                checked.pop(name, None)
+        if checked != before:
+            data["checked"] = checked
+            atomic_write(SETTINGS_PATH, json.dumps(data, indent=2) + "\n")
+
+
+def check_results(keys):
+    return {name: ai_providers.checked(name, keys) for name in ai_providers.ORDER}
+
+
+def remember_checks(keys, before):
+    """Keep this run's new failed checks across restarts and forget the ones that passed.
+
+    Only results that changed since `before` (from check_results) are written."""
+    changes = {}
+    for name, result in check_results(keys).items():
+        if result and result != before.get(name):
+            changes[name] = ai_providers.check_hint(name, keys) if result == "failed" else None
+    if changes:
+        try:
+            update_checks(changes)
+        except OSError:
+            pass  # remembering a check is a convenience, never a reason to fail the request
+
+
+def ai_status(keys):
+    return ai_providers.status(keys, disabled_providers(), failed_checks())
+
+
+def platform_name():
+    if os.name == "nt":
+        return "windows"
+    if sys.platform == "darwin":
+        return "mac"
+    return "linux" if sys.platform.startswith("linux") else "other"
+
+
 # ---------------- HTTP handler ----------------
 
 # Exact static files only; never a directory or user-supplied path.
@@ -913,17 +1125,19 @@ class Handler(BaseHTTPRequestHandler):
     def validate_request(self, protected=False):
         port = self.server.server_address[1]
         hosts = {"localhost:%d" % port, "127.0.0.1:%d" % port}
+        if port == 80:
+            hosts |= {"localhost", "127.0.0.1"}  # browsers leave out the default port
         host = self.headers.get("Host", "").lower()
         origin = self.headers.get("Origin")
         if host not in hosts or (origin and origin != "http://" + host):
-            self.reject_json({"error": "Request origin is not allowed"}, 403)
+            self.reject_json({"error": "Request origin is not allowed", "kind": "forbidden"}, 403)
             return False
         if self.headers.get("Sec-Fetch-Site") == "cross-site":
-            self.reject_json({"error": "Cross-site requests are not allowed"}, 403)
+            self.reject_json({"error": "Cross-site requests are not allowed", "kind": "forbidden"}, 403)
             return False
         app_token = self.headers.get("X-App-Token", "")
         if protected and (not app_token.isascii() or not secrets.compare_digest(app_token, SESSION_TOKEN)):
-            self.reject_json({"error": "Session expired. Reload the app and retry."}, 403)
+            self.reject_json({"error": "Session expired. Reload the page and try again.", "kind": "session_expired"}, 403)
             return False
         return True
 
@@ -1014,19 +1228,24 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("Request body must be a JSON object")
         return data
 
+    def fail(self, status, kind, message, **extra):
+        self.send_json(dict({"error": message, "kind": kind}, **extra), status)
+
     def do_GET(self):
         if not self.validate_request():
             return
         try:
             self.route_get()
         except UpstreamError:
-            self.send_json({"error": UPSTREAM_ERROR_MESSAGE}, 502)
+            self.fail(502, "ebay_unavailable", UPSTREAM_ERROR_MESSAGE)
+        except RequestError as e:
+            self.fail(e.status, e.kind, str(e))
         except ValueError as e:
-            self.send_json({"error": str(e) or "Invalid request parameters"}, 400)
+            self.fail(400, "invalid_request", str(e) or "Invalid request parameters")
         except TypeError:
-            self.send_json({"error": "Invalid request parameters"}, 400)
+            self.fail(400, "invalid_request", "Invalid request parameters")
         except Exception:
-            self.send_json({"error": "Request failed. Check service availability and credential storage."}, 502)
+            self.fail(502, "server_error", SERVER_ERROR_MESSAGE)
 
     def route_get(self):
         parsed = urllib.parse.urlsplit(self.path)
@@ -1038,31 +1257,22 @@ class Handler(BaseHTTPRequestHandler):
         elif path in STATIC_ASSETS:
             self.serve_index(path[1:], STATIC_ASSETS[path])
         elif path == "/health":
-            providers = {k.replace("_API_KEY", "").lower(): bool(os.environ.get(k))
-                         for k in SETTING_KEYS}
-            try:
-                ai_ready = ai_providers.status(effective_provider_environment())["ready"]
-            except Exception:
-                ai_ready = False
-            self.send_json({
-                "ok": True,
-                "app": "Marteloio",
-                "instance": APP_ID,
-                "ebay_configured": bool(client_id()),
-                "encrypted_storage": dpapi_available(),
-                "ai_ready": ai_ready,
-                "providers": providers,
-            })
+            self.handle_health()
         elif path == "/session":
             self.send_json({"token": SESSION_TOKEN})
         elif not self.validate_request(protected=True):
             return
+        elif path == "/app/info":
+            self.send_json({"version": VERSION, "build": BUILD, "installed": INSTALLED, "data_dir": DATA_DIR,
+                            "os": platform_name(), "port": self.server.server_address[1]})
         elif path == "/ai/status":
             self.handle_ai_status()
+        elif path == "/ai/freellmapi/detect":
+            self.handle_freellmapi_detect()
         elif path == "/ebay/userstats":
             self.handle_userstats()
         elif path == "/ebay/reference":
-            self.send_json(browse_reference(urllib.parse.parse_qs(parsed.query).get("item_id", [""])[0]))
+            self.handle_reference(urllib.parse.parse_qs(parsed.query).get("item_id", [""])[0])
         elif path == "/ebay/search":
             self.handle_search(urllib.parse.parse_qs(parsed.query))
         elif path == "/ebay/authorize-url":
@@ -1070,7 +1280,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/settings":
             self.handle_settings_get()
         else:
-            self.send_json({"error": "not found"}, 404)
+            self.fail(404, "not_found", "not found")
 
     def do_POST(self):
         if not self.validate_request(protected=True):
@@ -1078,13 +1288,17 @@ class Handler(BaseHTTPRequestHandler):
         try:
             self.route_post()
         except UpstreamError:
-            self.send_json({"error": UPSTREAM_ERROR_MESSAGE}, 502)
+            self.fail(502, "ebay_unavailable", UPSTREAM_ERROR_MESSAGE)
+        except RequestError as e:
+            self.reject_json({"error": str(e), "kind": e.kind}, e.status)
         except ValueError as e:
-            self.reject_json({"error": str(e) or "Invalid request. Check field types, size and characters."}, 400)
+            self.reject_json({"error": str(e) or "Invalid request. Check field types, size and characters.",
+                              "kind": "invalid_request"}, 400)
         except TypeError:
-            self.reject_json({"error": "Invalid request. Check field types, size and characters."}, 400)
+            self.reject_json({"error": "Invalid request. Check field types, size and characters.",
+                              "kind": "invalid_request"}, 400)
         except Exception:
-            self.send_json({"error": "Request failed. Check service availability and credential storage."}, 502)
+            self.fail(502, "server_error", SERVER_ERROR_MESSAGE)
 
     def route_post(self):
         path = urllib.parse.urlsplit(self.path).path
@@ -1098,18 +1312,18 @@ class Handler(BaseHTTPRequestHandler):
             body = self.read_json()
             code = safe_value(body.get("code", ""))
             if not code:
-                self.send_json({"error": "missing code"}, 400)
+                self.fail(400, "invalid_request", "Paste the whole web address you land on after approving on eBay.")
                 return
             redirect = safe_value(body.get("redirect_uri", "")) \
                 or os.environ.get("EBAY_REDIRECT_URI", "").strip()
             if not redirect:
-                self.send_json({"error": "missing redirect_uri - enter your RuName in settings"}, 400)
+                self.fail(400, "invalid_request", "Enter your RuName in Settings \u203a eBay first.")
                 return
             state = safe_value(body.get("state", ""))
             with _OAUTH_LOCK:
                 pending = _OAUTH_STATES.pop(state, None)
             if not pending or pending[0] < time.monotonic() or pending[1] != redirect:
-                self.send_json({"error": "Connect again and paste the complete redirect URL, including state."}, 400)
+                self.fail(400, "invalid_request", "Choose Connect eBay again, then paste the whole web address you land on.")
                 return
             self.guard(lambda: exchange_grant({
                 "grant_type": "authorization_code",
@@ -1121,7 +1335,7 @@ class Handler(BaseHTTPRequestHandler):
             with _USER_TOKEN_LOCK:
                 tok = read_token()
                 if not tok or not isinstance(tok.get("refresh_token"), str) or not tok['refresh_token'].strip():
-                    self.send_json({"error": "no stored refresh token"}, 400)
+                    self.fail(400, "ebay_not_connected", "Connect your eBay account in Settings \u203a eBay first.")
                     return
                 self.guard(lambda: exchange_grant({
                     "grant_type": "refresh_token",
@@ -1131,8 +1345,12 @@ class Handler(BaseHTTPRequestHandler):
             self.handle_settings_post()
         elif path == "/settings/ebay":
             self.handle_settings_ebay_post()
+        elif path == "/settings/ai":
+            self.handle_settings_ai()
+        elif path == "/ai/test":
+            self.handle_ai_test()
         else:
-            self.reject_json({"error": "not found"}, 404)
+            self.reject_json({"error": "not found", "kind": "not_found"}, 404)
 
     def guard(self, fn, persist=True, merge=True):
         try:
@@ -1145,10 +1363,46 @@ class Handler(BaseHTTPRequestHandler):
                         write_token(data)
             if "access_token" in data:
                 self.send_json({"connected": True})
+            elif status == 400 and not (client_id() and client_secret()):
+                self.fail(400, "ebay_not_configured", "Add your eBay Client ID and Client Secret in Settings \u203a eBay first.")
             else:
-                self.send_json({"error": "eBay authorization failed"}, status if status >= 400 else 502)
+                self.fail(status if status >= 400 else 502, "ebay_connect_failed",
+                          "eBay didn't finish connecting your account. Choose Connect eBay and try again.")
+        except EbayAuthError as error:
+            # 401 is the keyset; 400 is usually an expired or reused sign-in code.
+            if error.code == 401:
+                self.fail(502, "ebay_auth", EBAY_MESSAGES["ebay_auth"])
+            else:
+                self.fail(502, "ebay_connect_failed", "eBay didn't finish connecting your account. Choose Connect eBay and try again.")
         except Exception:
-            self.send_json({"error": "Could not authorize or save the eBay connection"}, 502)
+            self.fail(502, "ebay_connect_failed", "Marteloio couldn't connect or save your eBay account. Try again in a minute.")
+
+    def handle_health(self):
+        storage_error = False
+        try:
+            ebay_configured = bool(client_id())
+        except OSError:
+            ebay_configured, storage_error = False, True
+        try:
+            ai_ready = ai_providers.status(effective_provider_environment(), disabled_providers())["ready"]
+        except OSError:
+            ai_ready, storage_error = False, True
+        except Exception:
+            ai_ready = False
+        body = {
+            "ok": True,
+            "app": "Marteloio",
+            "instance": APP_ID,
+            "version": VERSION,
+            "build": BUILD,
+            "ebay_configured": ebay_configured,
+            "encrypted_storage": dpapi_available(),
+            "ai_ready": ai_ready,
+            "providers": {name: bool(os.environ.get(spec["env"])) for name, spec in ai_providers.PROVIDERS.items()},
+        }
+        if storage_error:
+            body["storage_error"] = True  # the app still runs; saving a key starts a new store
+        self.send_json(body)
 
     def handle_completion(self):
         body = self.read_json()
@@ -1160,8 +1414,10 @@ class Handler(BaseHTTPRequestHandler):
         for message in messages:
             if not isinstance(message, dict) or message.get("role") not in ("system", "user"):
                 raise ValueError("Invalid message")
-            if not isinstance(message.get("content"), str) or len(message["content"]) > 40000:
+            if not isinstance(message.get("content"), str):
                 raise ValueError("Invalid message content")
+            if len(message["content"]) > MAX_NOTES:
+                raise RequestError(NOTES_TOO_LONG_MESSAGE, "notes_too_long")
         raw_temp = body.get("temperature", 0.2)
         if isinstance(raw_temp, bool) or not isinstance(raw_temp, (int, float)):
             raise ValueError("Invalid temperature")
@@ -1179,22 +1435,27 @@ class Handler(BaseHTTPRequestHandler):
         try:
             keys = effective_provider_environment()
         except OSError:
-            self.send_json({"error": PROVIDER_STORE_ERROR, "kind": "provider_storage"}, 503)
+            self.fail(503, "provider_storage", PROVIDER_STORE_ERROR)
             return
-        if not any(keys.get(key, "").strip() for key in SETTING_KEYS):
-            status, error = provider_failure("no_provider")
+        disabled = disabled_providers()
+        if not ai_providers.usable(keys, disabled):
+            configured = any(ai_providers.configured(name, keys) for name in ai_providers.ORDER)
+            status, error = provider_failure("all_disabled" if configured else "no_provider")
             self.send_json(error, status)
             return
         if not _COMPLETION_SLOTS.acquire(blocking=False):
-            self.send_json({"error": "Three AI requests are already running in this app. Wait for a current lookup or generation to finish, then retry. Your draft is safe.",
-                            "kind": "local_busy"}, 429)
+            self.fail(429, "local_busy", "Marteloio is already writing three things. Wait for one to finish, then try again.")
             return
         try:
+            before, failure = check_results(keys), None
             try:
                 text, provider, model = ai_providers.chat(
                     messages, keys=keys, max_tokens=max_tokens, temperature=temperature, json_mode=True,
-                    deadline=time.monotonic() + COMPLETION_DEADLINE)
-            except ai_providers.NoProvider as failure:
+                    deadline=time.monotonic() + COMPLETION_DEADLINE, disabled=disabled)
+            except ai_providers.NoProvider as error:
+                failure = error
+            remember_checks(keys, before)
+            if failure:
                 status, error = provider_failure(failure.code, failure.retry_after)
                 self.send_json(error, status)
                 return
@@ -1207,19 +1468,185 @@ class Handler(BaseHTTPRequestHandler):
         try:
             keys = effective_provider_environment()
         except OSError:
-            self.send_json({"ready": False, "retry_in": 0, "providers": [], "error": PROVIDER_STORE_ERROR}, 503)
+            self.send_json({"ready": False, "retry_in": 0, "providers": [], "error": PROVIDER_STORE_ERROR,
+                            "kind": "provider_storage"}, 503)
             return
-        self.send_json(ai_providers.status(keys))
+        self.send_json(ai_status(keys))
 
-    def handle_userstats(self):
-        tok = user_token_fresh()
-        if not tok:
-            self.send_json({"error": "not connected - complete the OAuth flow first", "fallback": True})
+    def handle_ai_test(self):
+        body = self.read_json()
+        name = body.get("provider")
+        if not isinstance(name, str) or name not in ai_providers.PROVIDERS:
+            raise RequestError("Choose one of the AI services to test.")
+        try:
+            keys = effective_provider_environment()
+        except OSError:
+            self.fail(503, "provider_storage", PROVIDER_STORE_ERROR)
+            return
+        before = check_results(keys)
+        result = ai_providers.test(name, keys)
+        remember_checks(keys, before)
+        self.send_json(result)
+
+    def handle_freellmapi_detect(self):
+        try:
+            saved = effective_provider_environment().get("FREELLMAPI_URL", "")
+        except OSError:
+            saved = ""  # an unreadable store has no usable address
+        self.send_json(ai_providers.detect_freellmapi(saved if isinstance(saved, str) else ""))
+
+    def handle_settings_ai(self):
+        """One box for every AI service: recognise the pasted key, save it, set the Use switch, test."""
+        body = self.read_json()
+        provider = body.get("provider")
+        if not isinstance(provider, str) or provider not in ("auto",) + ai_providers.ORDER:
+            raise RequestError("Choose one of the AI services.")
+        text, url = body.get("key", ""), body.get("base_url", "")
+        enabled, remove, test = body.get("enabled"), body.get("remove", False), body.get("test", True)
+        if not isinstance(text, str) or not isinstance(url, str) or not isinstance(remove, bool) \
+                or not isinstance(enabled, (bool, type(None))) or not isinstance(test, (bool, type(None))):
+            raise RequestError("Invalid request. Check field types, size and characters.")
+        text, url = ai_providers.clean_pasted(text), url.strip()
+        looks_like_url = text.lower().startswith(("http://", "https://"))
+        if provider == "auto":
+            if not text:
+                raise RequestError(SETTINGS_AI_MESSAGES["nothing_to_save"], "nothing_to_save")
+            provider, pasted = ai_providers.recognise(text)
+            if provider is None:
+                raise RequestError(SETTINGS_AI_MESSAGES["unknown_key"], "unknown_key")
+        else:
+            pasted = "url" if provider == "freellmapi" and looks_like_url else "key"
+        spec = ai_providers.PROVIDERS[provider]
+        if pasted == "url":
+            text, url = "", text
+        elif looks_like_url:
+            raise RequestError(SETTINGS_AI_MESSAGES["invalid_key"], "invalid_key")
+        if not spec.get("url_env"):
+            url = ""  # only FreeLLMAPI has an address; the one-box UI may send it along anyway
+        if text and not ai_providers.valid_key_text(text):
+            raise RequestError(SETTINGS_AI_MESSAGES["invalid_key"], "invalid_key")
+        if url:
+            if not ai_providers.valid_local_url(url):
+                raise RequestError(SETTINGS_AI_MESSAGES["invalid_url"], "invalid_url")
+            url = ai_providers.normalize_base(url)
+        if remove and (text or url):
+            raise RequestError("Choose a new key or Remove, not both.")
+        updates = {}
+        if remove:
+            updates.update({env: "" for env in (spec["env"], spec.get("url_env")) if env})
+        if text:
+            updates[spec["env"]] = text
+        if url:
+            updates[spec["url_env"]] = url
+        if not updates and enabled is None:
+            raise RequestError(SETTINGS_AI_MESSAGES["nothing_to_save"], "nothing_to_save")
+        current = self.current_keys()
+        saved_url = current.get("FREELLMAPI_URL", "")
+        if text and spec.get("url_env") and not url and not (isinstance(saved_url, str) and saved_url.strip()):
+            # No address yet: use the one FreeLLMAPI answers at when it isn't the default.
+            found = ai_providers.detect_freellmapi()
+            if found["found"] and found["base_url"] != spec["base"]:
+                updates[spec["url_env"]] = found["base_url"]
+        if (text or url) and enabled is None:
+            enabled = True  # a new key is meant to be used
+        result, candidate = None, dict(current, **updates)
+        before = check_results(candidate)
+        if (text or url) and test is not False:
+            # Check the pasted key before it replaces the saved one: a rejected key is not kept.
+            result = ai_providers.test(provider, candidate)
+            if result.get("kind") == "key_rejected":
+                self.send_json({"saved": False, "provider": provider, "label": spec["label"], "test": result,
+                                "status": ai_status(current)})
+                return
+        try:
+            if updates:
+                save_provider_settings(updates)
+            if enabled is not None:
+                set_provider_enabled(provider, enabled)
+        except OSError:
+            self.fail(500, "provider_storage_write", STORAGE_WRITE_ERROR)
+            return
+        for name, value in updates.items():
+            os.environ[name] = value
+        if updates:
+            ai_providers.reset({provider})
+            if result is None:
+                self.forget_checks({provider})  # a new key or address has not been checked yet
+        try:
+            keys = effective_provider_environment()
+        except OSError:
+            self.fail(503, "provider_storage", PROVIDER_STORE_ERROR)
+            return
+        if result is not None:
+            remember_checks(keys, before)
+        self.send_json({"saved": True, "provider": provider, "label": spec["label"], "test": result,
+                        "status": ai_status(keys)})
+
+    @staticmethod
+    def forget_checks(names):
+        try:
+            update_checks({name: None for name in names})
+        except OSError:
+            pass
+
+    @staticmethod
+    def current_keys():
+        """The keys in use now; a store that can't be read adds none."""
+        try:
+            return effective_provider_environment()
+        except OSError:
+            keys = dict(os.environ)
+            keys.update(read_env())
+            return keys
+
+    def ebay_ready(self):
+        """True when eBay keys are saved; otherwise send the matching error."""
+        try:
+            if client_id():
+                return True
+            kind = "ebay_not_configured"
+        except OSError:
+            kind = "ebay_storage"
+        self.fail(EBAY_STATUS.get(kind, 200), kind, EBAY_MESSAGES[kind], fallback=True)
+        return False
+
+    def handle_reference(self, item_id):
+        if not self.ebay_ready():
             return
         try:
-            self.send_json(trading_get_user(tok["access_token"]))
+            self.send_json(browse_reference(item_id))
+        except EbayAuthError:
+            self.fail(502, "ebay_auth", EBAY_MESSAGES["ebay_auth"])
+        except urllib.error.HTTPError as error:
+            code = error.code
+            error.close()
+            kind = ("ebay_listing_gone" if code in (404, 410) else
+                    "ebay_auth" if code in (401, 403) else "ebay_unavailable")
+            self.fail(404 if kind == "ebay_listing_gone" else 502, kind, EBAY_MESSAGES[kind])
+        except (urllib.error.URLError, OSError, http.client.HTTPException, RuntimeError):
+            self.fail(502, "ebay_unavailable", EBAY_MESSAGES["ebay_unavailable"])
+
+    def handle_userstats(self):
+        try:
+            tok = user_token_fresh()
+        except OSError:
+            self.fail(503, "ebay_storage", EBAY_MESSAGES["ebay_storage"])
+            return
+        if not tok:
+            self.fail(200, "ebay_not_connected",
+                      "Connect your eBay account in Settings \u203a eBay to fill in your seller numbers.", fallback=True)
+            return
+        try:
+            stats = trading_get_user(tok["access_token"])
         except Exception:
-            self.send_json({"error": "Could not load eBay seller statistics. Check your connection and try again."}, 502)
+            self.fail(502, "ebay_unavailable", "Marteloio couldn't load your eBay seller statistics. Try again in a minute.")
+            return
+        if "error" in stats:
+            # eBay's own text is not shown: it can name internal details.
+            self.fail(502, "ebay_not_connected",
+                      "eBay didn't accept the saved connection. Choose Connect eBay in Settings \u203a eBay, then try again.")
+            return
+        self.send_json(stats)
 
     def handle_search(self, qs):
         keywords = (qs.get("keywords", [""])[0]).strip()
@@ -1227,27 +1654,25 @@ class Handler(BaseHTTPRequestHandler):
         try:
             limit = int(raw_limit)
         except (ValueError, TypeError):
-            self.send_json({"error": "limit must be a number"}, 400)
+            self.fail(400, "invalid_request", "limit must be a number")
             return
         limit = max(1, min(limit, 50))
-        gtin = normalize_gtin(qs.get("gtin", [""])[0])
-        if len(keywords) > 200:
-            raise ValueError("Query too long")
-        if not keywords and not gtin:
-            self.send_json({"error": "Enter a product name or barcode"}, 400)
-            return
-        if not client_id():
-            self.send_json({"error": "EBAY_CLIENT_ID not set", "fallback": True})
-            return
         try:
-            result = try_search('', limit, gtin=gtin) if gtin else try_search(keywords, limit)
-        except ValueError as e:
-            self.send_json({"error": "eBay search failed: %s" % str(e)}, 502)
+            gtin = normalize_gtin(qs.get("gtin", [""])[0])
+        except ValueError:
+            raise RequestError(INVALID_BARCODE_MESSAGE, "invalid_barcode") from None
+        if len(keywords) > 200:
+            raise RequestError("This product name is too long. Shorten it and try again.")
+        if not keywords and not gtin:
+            self.fail(400, "invalid_request", "Enter a product name or barcode first.")
             return
-        if result:
-            self.send_json(result)
+        if not self.ebay_ready():
+            return
+        result = try_search('', limit, gtin=gtin) if gtin else try_search(keywords, limit)
+        if "error" in result:
+            self.send_json(result, EBAY_STATUS.get(result.get("kind"), 200))
         else:
-            self.send_json({"error": "eBay search APIs unavailable (keyset may lack access)", "fallback": True})
+            self.send_json(result)
 
     def handle_settings_get(self):
         plain = read_env()
@@ -1263,8 +1688,7 @@ class Handler(BaseHTTPRequestHandler):
             csec = get_ebay_cred("ebay_client_secret")
         except OSError:
             cid = csec = ""
-            ebay_error = ("Stored eBay credentials could not be read. Restore the store "
-                          "using the Windows account that created it before saving credentials.")
+            ebay_error = EBAY_MESSAGES["ebay_storage"]
         self.send_json({
             "provider_error": provider_error,
             "provider_storage": "windows_encrypted" if dpapi_available() else "plaintext",
@@ -1288,11 +1712,11 @@ class Handler(BaseHTTPRequestHandler):
         cid = safe_value(body.get("client_id", ""))
         csec = safe_value(body.get("client_secret", ""))
         if not cid and not csec:
-            self.send_json({"error": "nothing to save - enter a Client ID or Client Secret"}, 400)
+            self.fail(400, "nothing_to_save", "Enter a Client ID or Client Secret first.")
             return
         if dpapi_available():
             if not set_ebay_creds(cid or None, csec or None):
-                self.send_json({"error": "could not encrypt credentials"}, 500)
+                self.fail(500, "ebay_storage_write", STORAGE_WRITE_ERROR)
                 return
             invalidate_ebay_cache()
             saved = [n for n, v in (("EBAY_CLIENT_ID", cid),
@@ -1307,8 +1731,8 @@ class Handler(BaseHTTPRequestHandler):
             updates["EBAY_CLIENT_SECRET"] = csec
         try:
             write_env(updates)
-        except OSError as e:
-            self.send_json({"error": "could not write .env: %s" % e}, 500)
+        except OSError:
+            self.fail(500, "ebay_storage_write", STORAGE_WRITE_ERROR)
             return
         for k, v in updates.items():
             os.environ[k] = v
@@ -1320,14 +1744,19 @@ class Handler(BaseHTTPRequestHandler):
     def handle_authorize_url(self, query):
         redirect = (urllib.parse.parse_qs(query).get("redirect_uri") or [""])[0].strip() \
             or os.environ.get("EBAY_REDIRECT_URI", "").strip()
-        if not client_id():
-            self.send_json({"error": "EBAY_CLIENT_ID not set - save it in Settings first"}, 400)
+        try:
+            cid = client_id()
+        except OSError:
+            self.fail(503, "ebay_storage", EBAY_MESSAGES["ebay_storage"])
+            return
+        if not cid:
+            self.fail(400, "ebay_not_configured", "Add your eBay Client ID in Settings \u203a eBay first.")
             return
         if not redirect:
-            self.send_json({"error": "missing redirect_uri - enter your RuName in settings"}, 400)
+            self.fail(400, "invalid_request", "Enter your RuName in Settings \u203a eBay first.")
             return
         url = ("https://auth.ebay.com/oauth2/authorize"
-               + "?client_id=" + urllib.parse.quote(client_id())
+               + "?client_id=" + urllib.parse.quote(cid)
                + "&redirect_uri=" + urllib.parse.quote(redirect)
                + "&response_type=code"
                + "&scope=" + urllib.parse.quote("https://api.ebay.com/oauth/api_scope"))
@@ -1360,17 +1789,18 @@ class Handler(BaseHTTPRequestHandler):
             elif value:
                 updates[envname] = value
         if not updates:
-            self.send_json({"error": "nothing to save - enter a key or select a saved key to remove"}, 400)
+            self.fail(400, "nothing_to_save", "Enter a key, or choose a saved key to remove.")
             return
         try:
             storage = save_provider_settings(updates)
         except OSError:
-            self.send_json({"error": "Could not save provider settings. Check file permissions and the encrypted store; existing credentials were not intentionally cleared."}, 500)
+            self.fail(500, "provider_storage_write", STORAGE_WRITE_ERROR)
             return
         for k, v in updates.items():
             os.environ[k] = v
         # New generations read keys per request; only clear the changed providers' benches.
         ai_providers.reset(set(updates))
+        self.forget_checks({name for name, spec in ai_providers.PROVIDERS.items() if spec["env"] in updates})
         self.send_json({
             "saved": sorted(updates),
             "applied": True,
@@ -1385,7 +1815,7 @@ class Handler(BaseHTTPRequestHandler):
             with open(p, "rb") as f:
                 data = f.read()
         except OSError:
-            self.send_json({"error": "index.html missing"}, 500)
+            self.fail(500, "server_error", "index.html missing")
             return
         self.send_response(200)
         self.send_header("Content-Type", content_type)
@@ -1394,19 +1824,84 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
 
+SETTINGS_AI_MESSAGES = {
+    "unknown_key": "Marteloio doesn't recognise this key. Copy the whole key from Google AI Studio, Groq, "
+                   "OpenRouter or FreeLLMAPI, then paste it again.",
+    "invalid_key": "This key looks incomplete. Copy the whole key, then paste it again.",
+    "invalid_url": "Use the FreeLLMAPI address from this computer or your home network. It starts with http://.",
+    "nothing_to_save": "Paste a key first.",
+}
+
+
 class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
     daemon_threads = True
+    exclusive = True
+
+    def server_bind(self):
+        if os.name == "nt":
+            # SO_REUSEADDR lets a second program share a port on Windows: claim it instead.
+            self.allow_reuse_address = False
+            if self.exclusive:
+                self.socket.setsockopt(socket.SOL_SOCKET,
+                                       getattr(socket, "SO_EXCLUSIVEADDRUSE", ~socket.SO_REUSEADDR), 1)
+        super().server_bind()
 
 
-if __name__ == "__main__":
+class _PlainBindServer(ThreadingHTTPServer):
+    exclusive = False
+
+
+def port_listening(port):
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+def bind_server(port):
+    """The relay's listening server. On Windows the last copy's closing connections can keep
+    an exclusively bound port blocked for a few minutes; when nothing listens on it, a plain
+    bind (still without SO_REUSEADDR, so no second copy can share it) is used instead."""
+    try:
+        return ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    except OSError:
+        if os.name != "nt" or port_listening(port):
+            raise
+    print("[relay] Port %d is still closing from the last run; using it without exclusive use." % port,
+          file=sys.stderr, flush=True)
+    return _PlainBindServer(("127.0.0.1", port), Handler)
+
+
+def report_unreadable_store():
+    """Say in relay.log why saved keys can't be used (never their values)."""
+    try:
+        load_secrets()
+    except OSError as error:
+        if isinstance(error.__cause__, StoreUnreadable):
+            print("[secrets] The saved keys could not be read: %s. The app still runs; paste the keys again in "
+                  "Settings and the old file will be kept beside the new one." % _store_problem(error.__cause__),
+                  file=sys.stderr, flush=True)
+        else:
+            print("[secrets] The saved keys could not be opened (the file may be in use, or not downloaded "
+                  "from OneDrive yet). It was left as it is.", file=sys.stderr, flush=True)
+
+
+def main():
+    global PORT
     load_env()
     PORT = int(os.environ.get("PORT", "8080"))
-    srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    srv = bind_server(PORT)
     migrate_secrets()
+    report_unreadable_store()
     try:
-        print("Marteloio relay on http://localhost:%d" % PORT)
+        print("Marteloio %s (build %s) on http://localhost:%d" % (VERSION, BUILD, PORT), flush=True)
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         srv.server_close()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,6 +1,12 @@
 @echo off
 setlocal
 cd /d "%~dp0"
+rem Explorer runs a .bat inside a ZIP from a temporary folder without the other files.
+if not exist "%~dp0server.py" (
+  echo Marteloio is still inside the ZIP file. Right-click the ZIP, choose Extract All, then open the extracted folder and run start-all.bat again.
+  pause
+  exit /b 1
+)
 rem Prefer installed Python, keeping the existing uv runtime as a fallback.
 where python >nul 2>&1
 if not errorlevel 1 (

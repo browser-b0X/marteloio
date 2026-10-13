@@ -5,6 +5,6 @@ cd /d "%~dp0"
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0stop-services.ps1"
 set "STOP_RESULT=%ERRORLEVEL%"
 echo.
-if not "%STOP_RESULT%"=="0" echo Nothing ambiguous was killed. Resolve the reported conflict before relaunching.
+if not "%STOP_RESULT%"=="0" echo Nothing was stopped. See the message above.
 timeout /t 4 >nul
 exit /b %STOP_RESULT%

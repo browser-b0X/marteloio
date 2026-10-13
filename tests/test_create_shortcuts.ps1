@@ -20,7 +20,8 @@ try {
     Assert-Check ($launch.TargetPath -ieq (Join-Path $root 'start-all.bat')) 'Launch shortcut must run start-all.bat'
     Assert-Check ($launch.WorkingDirectory -ieq $root) 'Launch shortcut must start in the project folder'
     Assert-Check ($launch.IconLocation -ieq ((Join-Path $root 'assets\brand\marteloio.ico') + ',0')) 'Launch shortcut must use the Marteloio icon'
-    Assert-Check ($launch.WindowStyle -eq 7) 'Launcher console should start minimized'
+    Assert-Check ($launch.WindowStyle -eq 1) 'Launcher window must open normally so startup messages stay visible'
+    Assert-Check ($shell.CreateShortcut((Join-Path $desk 'Marteloio.lnk')).WindowStyle -eq 1) 'Desktop shortcut must open a normal window'
     $stop = $shell.CreateShortcut((Join-Path $menu 'Stop Marteloio.lnk'))
     Assert-Check ($stop.TargetPath -ieq (Join-Path $root 'stop.bat')) 'Stop shortcut must run stop.bat'
     Assert-Check ($shell.CreateShortcut((Join-Path $desk 'Marteloio.lnk')).TargetPath -ieq (Join-Path $root 'start-all.bat')) 'Desktop shortcut must run start-all.bat'

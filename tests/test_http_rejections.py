@@ -123,7 +123,7 @@ class RequestRejectionTests(unittest.TestCase):
         status, connection, data = self.post(
             b"x" * 32000, {"X-App-Token": server.SESSION_TOKEN}, "/unknown")
         self.assertEqual((status, connection), (404, "close"))
-        self.assertEqual(data, {"error": "not found"})
+        self.assertEqual(data, {"error": "not found", "kind": "not_found"})
 
     def raw_headers(self, framing, authenticated=False):
         token = "X-App-Token: %s\r\n" % server.SESSION_TOKEN if authenticated else ""
@@ -226,11 +226,12 @@ class RequestRejectionTests(unittest.TestCase):
     def test_unreadable_ebay_reference_body_is_a_fixed_502(self):
         auth = {"X-App-Token": server.SESSION_TOKEN}
         path = "/ebay/reference?item_id=v1%7C123%7C0"
-        with patch.object(server, "app_token_fresh", return_value="fixture"), \
+        with patch.object(server, "client_id", return_value="fixture-id"), \
+                patch.object(server, "app_token_fresh", return_value="fixture"), \
                 patch.object(server, "http_get", return_value=(200, "<html>not json</html>")):
             status, data = self.get(path, auth)
         self.assertEqual(status, 502)
-        self.assertEqual(data, {"error": server.UPSTREAM_ERROR_MESSAGE})
+        self.assertEqual(data, {"error": server.UPSTREAM_ERROR_MESSAGE, "kind": "ebay_unavailable"})
 
     def test_unreadable_ebay_token_body_is_a_fixed_502(self):
         auth = {"X-App-Token": server.SESSION_TOKEN}
@@ -244,7 +245,7 @@ class RequestRejectionTests(unittest.TestCase):
                     patch.object(server, "http_get") as listing:
                 status, data = self.get(path, auth)
                 self.assertEqual(status, 502)
-                self.assertEqual(data, {"error": server.UPSTREAM_ERROR_MESSAGE})
+                self.assertEqual(data, {"error": server.UPSTREAM_ERROR_MESSAGE, "kind": "ebay_unavailable"})
                 listing.assert_not_called()
 
     def test_ai_status_requires_session_and_never_exposes_keys(self):
@@ -256,13 +257,14 @@ class RequestRejectionTests(unittest.TestCase):
             status, data = self.get("/ai/status", {"X-App-Token": server.SESSION_TOKEN})
         self.assertEqual(status, 200)
         self.assertEqual(set(data), {"ready", "retry_in", "providers"})
-        self.assertEqual([p["id"] for p in data["providers"]], ["gemini", "groq", "openrouter"])
-        self.assertEqual([p["configured"] for p in data["providers"]], [False, True, False])
-        self.assertNotIn("gsk_status_fixture_secret", json.dumps(data))
-        self.assertNotIn("cret", json.dumps(data))
+        self.assertEqual([p["id"] for p in data["providers"]], ["freellmapi", "gemini", "groq", "openrouter"])
+        self.assertEqual([p["configured"] for p in data["providers"]], [False, False, True, False])
+        self.assertNotIn("gsk_status_fixture_se", json.dumps(data))
+        self.assertEqual([p["key_hint"] for p in data["providers"]], ["", "", "cret", ""])
         with patch.object(server, "load_secrets", side_effect=OSError("fixture")):
             status, data = self.get("/ai/status", {"X-App-Token": server.SESSION_TOKEN})
-        self.assertEqual((status, data["ready"], data["error"]), (503, False, server.PROVIDER_STORE_ERROR))
+        self.assertEqual((status, data["ready"], data["error"], data["kind"]),
+                         (503, False, server.PROVIDER_STORE_ERROR, "provider_storage"))
 
     def test_router_endpoint_is_gone_and_health_reports_ai_readiness(self):
         status, data = self.get("/router/health", {"X-App-Token": server.SESSION_TOKEN})
@@ -309,7 +311,7 @@ class RequestRejectionTests(unittest.TestCase):
     def test_valid_json_still_routes_without_mutation(self):
         status, _, data = self.post(b"{}", {"X-App-Token": server.SESSION_TOKEN})
         self.assertEqual(status, 400)
-        self.assertIn("nothing to save", data["error"])
+        self.assertEqual(data["kind"], "nothing_to_save")
 
 
 if __name__ == "__main__":

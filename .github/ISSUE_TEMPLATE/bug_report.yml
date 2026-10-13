@@ -27,8 +27,9 @@ body:
   - type: input
     id: version
     attributes:
-      label: Version or commit
-      placeholder: e.g. main at abc1234, or the date you downloaded it
+      label: Version and build
+      description: Shown in Settings › About (for example 0.2.0, build 32e0eb9bea5f). From source, the commit also helps.
+      placeholder: e.g. 0.2.0, build 32e0eb9bea5f
   - type: dropdown
     id: os
     attributes:
@@ -46,7 +47,7 @@ body:
     attributes:
       label: Area
       multiple: true
-      options: [Starting or stopping the app, Generating a listing, Listing HTML or eBay preview, Bundles, Look up or Find keywords, Templates or drafts, Settings or keys, Other]
+      options: [Installing or updating, First-run setup or tour, Starting or stopping the app, Generating a listing, Listing HTML or eBay preview, Bundles, Look up or Find keywords, Templates or drafts, Settings or keys, Other]
   - type: textarea
     id: logs
     attributes:

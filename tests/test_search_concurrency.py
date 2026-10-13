@@ -101,13 +101,13 @@ class SearchCoordinationTests(unittest.TestCase):
     def test_busy_queue_is_bounded(self):
         server._SEARCH_PENDING.update({i: object() for i in range(8)})
         with patch.object(server, 'browse_search') as network:
-            self.assertIn('busy', server.try_search('new', 20)['error'])
+            self.assertEqual(server.try_search('new', 20)['kind'], 'ebay_busy')
             network.assert_not_called()
 
     def test_capacity_failure_releases_pending_slot(self):
         with patch.object(server, '_SEARCH_SLOTS') as slots, patch.object(server, 'browse_search') as network:
             slots.acquire.return_value = False
-            self.assertIn('busy', server.try_search('new', 20)['error'])
+            self.assertEqual(server.try_search('new', 20)['kind'], 'ebay_busy')
             self.assertEqual(server._SEARCH_PENDING, {})
             slots.release.assert_not_called()
             network.assert_not_called()

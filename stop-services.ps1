@@ -51,23 +51,39 @@ public static class MarteloioProcess {
 '@
 }
 
+function Get-DataDir([string]$Project) {
+    # Match app_paths.py: an override, an installed copy's %LOCALAPPDATA%\Marteloio, else the project folder.
+    $override = [Environment]::GetEnvironmentVariable('MARTELOIO_DATA_DIR')
+    if ($override -and [IO.Path]::IsPathRooted($override)) { return $override }
+    if (Test-Path -LiteralPath (Join-Path $Project 'marteloio-installed') -PathType Leaf) {
+        $local = [Environment]::GetEnvironmentVariable('LOCALAPPDATA')
+        if (-not $local) { $local = [Environment]::GetFolderPath('LocalApplicationData') }
+        return (Join-Path $local 'Marteloio')
+    }
+    return $Project
+}
+
 function Get-ServicePorts([string]$Project) {
     $values = @{ PORT = '8080' }
     $value = [Environment]::GetEnvironmentVariable('PORT')
     if ($null -ne $value) { $values.PORT = $value }
-    $envPath = Join-Path $Project '.env'
+    $envPath = Join-Path (Get-DataDir $Project) '.env'
     if (Test-Path -LiteralPath $envPath) {
-        # Match the Windows launcher: .env values override inherited values.
+        # Match the launcher: .env values override inherited values, matching quotes are removed.
         # Never evaluate, expand, or print any .env value (including credentials).
         foreach ($line in [IO.File]::ReadAllLines($envPath)) {
             if ($line -cmatch '^\s*(PORT)\s*=(.*)$') {
-                $values[$Matches[1]] = $Matches[2].Trim()
+                $port = $Matches[2].Trim()
+                if ($port.Length -ge 2 -and ($port[0] -eq [char]34 -or $port[0] -eq [char]39) -and $port[-1] -eq $port[0]) {
+                    $port = $port.Substring(1, $port.Length - 2)
+                }
+                $values['PORT'] = $port
             }
         }
     }
     $number = 0
     if ($values.PORT -notmatch '^\d{1,5}$' -or -not [int]::TryParse($values.PORT, [ref]$number) -or $number -lt 1 -or $number -gt 65535) {
-        throw "Invalid PORT. Use a port number between 1 and 65535."
+        throw "PORT in the .env file must be a number from 1 to 65535."
     }
     $values.PORT = $number
     return $values
@@ -139,41 +155,41 @@ function Invoke-ServiceStop([string]$Project, [bool]$Preview) {
     # currently working service intact. No process-tree or image-name termination.
     $port = $ports.PORT
     $ids = @(Get-ListenerIds $port)
-    if ($ids.Count -gt 1) { throw "Multiple processes listen on port $port; refusing to guess ownership." }
+    if ($ids.Count -gt 1) { throw "More than one program uses port $port, so nothing was stopped." }
     if (-not $ids.Count) {
-        Write-Host "Nothing listening on port $port."
+        Write-Host "Marteloio isn't running."
     } else {
         $identity = Get-ProcessIdentity $ids[0]
         $exact = Test-ServiceCommand $identity.Command $Project
         $relayCooperative = Test-RelayIdentity $port $projectId
-        if (-not $exact -and -not $relayCooperative) { throw "Port $port is not a verified relay for this project. No process was stopped." }
+        if (-not $exact -and -not $relayCooperative) { throw "Port $port is used by another program, not this copy of Marteloio, so nothing was stopped." }
         $relay = $identity; $relayExact = $exact
-        Write-Host "Verified project relay on port $port (PID $($ids[0]))."
+        Write-Host "Stopping Marteloio (port $port, process $($ids[0]))."
     }
     if ($Preview) { Write-Host 'Dry run complete. No shutdown request or process termination was sent.'; return }
     if ($null -ne $relay) {
         if ($relayCooperative) {
             # Recheck before obtaining the per-run token. Never print or persist it.
-            if (-not (Test-RelayIdentity $ports.PORT $projectId)) { throw 'Relay identity changed; stopping cancelled.' }
+            if (-not (Test-RelayIdentity $ports.PORT $projectId)) { throw 'The program on the port changed, so nothing was stopped.' }
             try {
                 $session = Invoke-RestMethod -Uri "http://127.0.0.1:$($ports.PORT)/session" -TimeoutSec 3 -MaximumRedirection 0
                 $null = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$($ports.PORT)/shutdown" -Headers @{ 'X-App-Token' = $session.token } -ContentType 'application/json' -Body '{}' -TimeoutSec 3 -MaximumRedirection 0
-            } catch { Write-Host 'Cooperative shutdown did not finish; checking the verified process.' }
+            } catch { Write-Host 'Marteloio did not answer the stop request; checking its process.' }
             $deadline = [DateTime]::UtcNow.AddSeconds(18)
             while (@(Get-ListenerIds $ports.PORT).Count -gt 0 -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 250 }
         }
         if (@(Get-ListenerIds $ports.PORT).Count -gt 0) {
-            if (-not $relayExact) { throw 'Relay did not exit and has no absolute script path. Refusing forced stop; close its own console manually.' }
+            if (-not $relayExact) { throw 'Marteloio did not stop, and its process could not be confirmed, so it was left running. Restart the computer to stop it.' }
             Stop-VerifiedProcess $relay
         }
     }
     $deadline = [DateTime]::UtcNow.AddSeconds(3)
     do {
         $remaining = @(Get-ListenerIds $ports.PORT)
-        if (-not $remaining.Count) { Write-Host 'Marteloio relay stopped.'; return }
+        if (-not $remaining.Count) { Write-Host 'Marteloio has stopped.'; return }
         Start-Sleep -Milliseconds 200
     } while ([DateTime]::UtcNow -lt $deadline)
-    throw 'The app port is still occupied. Refusing to relaunch; inspect the service manually.'
+    throw "Port $($ports.PORT) is still in use, so Marteloio was not restarted. Wait a minute and try again."
 }
 
 # Dot-source only for the focused offline tests; normal script runs always preflight.
@@ -182,7 +198,7 @@ if ($MyInvocation.InvocationName -ne '.') {
         Invoke-ServiceStop ([IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\')) ([bool]$DryRun)
         exit 0
     } catch {
-        Write-Error -ErrorAction Continue "Safe stop failed: $($_.Exception.Message)"
+        Write-Error -ErrorAction Continue "Marteloio was not stopped: $($_.Exception.Message)"
         exit 1
     }
 }

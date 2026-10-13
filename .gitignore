@@ -1,8 +1,11 @@
 .env
 .ebay_token.json
 .marteloio-secrets.enc*
+*.unreadable-*.enc
 .lanzalister-secrets.enc*
 *.log
+relay.log.1
+/settings.json
 __pycache__/
 .venv/
 Claude outputs/

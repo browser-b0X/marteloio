@@ -1,0 +1,35 @@
+# Files the Windows installer copies into the install folder, relative to the repository
+# root, one per line. Only what the app needs at runtime plus its license notices: no
+# tests, docs, .env, keys, logs or dev scripts. build-installer.ps1 refuses to build if a
+# file is missing or anything else ends up in the staged copy; tests/test_packaging.py
+# checks that every file the server serves and every module it imports is listed here.
+# Python itself (packaging\build\app\runtime\) and the marteloio-installed marker are
+# added by the build script and installer.iss.
+
+# The app
+index.html
+listing-core.js
+server.py
+ai_providers.py
+app_paths.py
+launch.py
+VERSION
+
+# License and name policy
+LICENSE
+TRADEMARKS.md
+
+# Logo (served to the browser) and the shortcut icon
+assets/brand/marteloio-light.png
+assets/brand/marteloio-dark.png
+assets/brand/marteloio-light-64.png
+assets/brand/marteloio-dark-64.png
+assets/brand/marteloio.ico
+
+# Fonts the server serves, with the SIL Open Font License texts that must travel with them
+assets/fonts/manrope-latin-wght-normal.woff2
+assets/fonts/manrope-latin-ext-wght-normal.woff2
+assets/fonts/space-grotesk-latin-wght-normal.woff2
+assets/fonts/space-grotesk-latin-ext-wght-normal.woff2
+assets/fonts/OFL-Manrope.txt
+assets/fonts/OFL-SpaceGrotesk.txt

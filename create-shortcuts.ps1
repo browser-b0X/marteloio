@@ -54,7 +54,7 @@ function Invoke-Shortcuts([string]$Root, [string]$StartMenu, [string]$Desktop, [
         $link.WorkingDirectory = $Root
         $link.IconLocation = $item.Icon
         $link.Description = $item.Description
-        $link.WindowStyle = 7   # the launcher's console starts minimized; it closes itself once the app is open
+        $link.WindowStyle = 1   # a normal window, so a startup problem and its pause stay in view
         $link.Save()
         $done += $item.Path
     }

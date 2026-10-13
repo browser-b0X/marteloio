@@ -33,6 +33,7 @@ REAL_ENV_PATH = server.ENV_PATH
 REAL_SECRETS_PATH = server.SECRETS_PATH
 REAL_LEGACY_SECRETS_PATH = server.LEGACY_SECRETS_PATH
 REAL_TOKEN_PATH = server.TOKEN_PATH
+REAL_SETTINGS_PATH = server.SETTINGS_PATH
 
 
 def snapshot(path):
@@ -47,6 +48,7 @@ REAL_ENV_BEFORE = snapshot(REAL_ENV_PATH)
 REAL_SECRETS_BEFORE = snapshot(REAL_SECRETS_PATH)
 REAL_LEGACY_SECRETS_BEFORE = snapshot(REAL_LEGACY_SECRETS_PATH)
 REAL_TOKEN_BEFORE = snapshot(REAL_TOKEN_PATH)
+REAL_SETTINGS_BEFORE = snapshot(REAL_SETTINGS_PATH)
 
 
 class IsolatedCredentialPaths(unittest.TestCase):
@@ -55,7 +57,8 @@ class IsolatedCredentialPaths(unittest.TestCase):
         for name, value in (("ENV_PATH", os.path.join(self.base, "env-under-test")),
                             ("SECRETS_PATH", os.path.join(self.base, "store-under-test")),
                             ("LEGACY_SECRETS_PATH", os.path.join(self.base, "legacy-store-under-test")),
-                            ("TOKEN_PATH", os.path.join(self.base, "token-under-test"))):
+                            ("TOKEN_PATH", os.path.join(self.base, "token-under-test")),
+                            ("SETTINGS_PATH", os.path.join(self.base, "settings-under-test"))):
             patcher = patch.object(server, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -68,6 +71,7 @@ class IsolatedCredentialPaths(unittest.TestCase):
         self.assertEqual(snapshot(REAL_SECRETS_PATH), REAL_SECRETS_BEFORE, "the real secrets store changed")
         self.assertEqual(snapshot(REAL_LEGACY_SECRETS_PATH), REAL_LEGACY_SECRETS_BEFORE, "the real legacy store changed")
         self.assertEqual(snapshot(REAL_TOKEN_PATH), REAL_TOKEN_BEFORE, "the real .ebay_token.json changed")
+        self.assertEqual(snapshot(REAL_SETTINGS_PATH), REAL_SETTINGS_BEFORE, "the real settings.json changed")
 
     def read(self):
         with open(server.ENV_PATH, encoding="utf-8") as handle:
@@ -133,8 +137,8 @@ class EnvWritePathTests(IsolatedCredentialPaths):
         self.assertEqual(self.read(), before)
         self.assertNotIn("SHELL", self.read())
         self.assertEqual(set(server.SETTING_KEYS) | {"EBAY_CLIENT_ID", "EBAY_CLIENT_SECRET"},
-                         {"GROQ_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY",
-                          "EBAY_CLIENT_ID", "EBAY_CLIENT_SECRET"})
+                         {"GROQ_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY", "FREELLMAPI_KEY",
+                          "FREELLMAPI_URL", "EBAY_CLIENT_ID", "EBAY_CLIENT_SECRET"})
 
     def test_safe_value_blocks_env_line_injection(self):
         for value in ("a\nb", "a\rb", "a\x7fb", "a\x00b", "x" * 8193, 123, None):
@@ -283,7 +287,14 @@ class SecretStoreTests(IsolatedCredentialPaths):
             server.load_secrets()
         self.assertEqual(str(error.exception),
                          "Cannot read encrypted credentials; restore the store or use its original Windows account")
-        self.assertFalse(server.set_ebay_creds(cid="x"))
+        # Saving keys again starts a new store; the unreadable one is kept under a new name.
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertTrue(server.set_ebay_creds(cid="x"))
+        self.assertEqual(server.load_secrets(), {"ebay_client_id": "x"})
+        kept = [name for name in os.listdir(self.base) if ".unreadable-" in name]
+        self.assertEqual(len(kept), 1)
+        with open(os.path.join(self.base, kept[0]), encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), "!!!not-valid-base64-or-ciphertext!!!")
         self.assertTrue(server.save_secrets({"ebay_client_id": "CID-3"}))
         self.assertEqual(server.load_secrets(), {"ebay_client_id": "CID-3"})
         self.assertNoTempLeftovers()

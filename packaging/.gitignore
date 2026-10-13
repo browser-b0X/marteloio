@@ -1,0 +1,7 @@
+# Made by build-installer.ps1; never commit them.
+# cache: the downloaded Python embeddable package (checked against the pinned SHA-256)
+# build: the staged app and Python runtime
+# dist:  Marteloio-Setup.exe, its .sha256 and build.log (upload them to a GitHub release)
+cache/
+build/
+dist/
