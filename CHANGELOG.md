@@ -2,7 +2,7 @@
 
 What changed in each version of Marteloio, newest first. Your version is in Settings › About.
 
-## 0.2.0 — unreleased
+## 0.2.0 — 2026-10-13
 
 This version is about getting started without help: a Windows installer, a guided first run,
 messages in plain words and one box for every AI key.
