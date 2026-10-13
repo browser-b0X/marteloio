@@ -69,9 +69,20 @@ From a terminal the same release is
 
 The installer isn't code-signed yet, so Windows SmartScreen shows **"Windows protected your
 PC"**. Users choose **More info**, then **Run anyway**. Browsers may also ask whether to
-keep the download. The plan is to apply to the [SignPath Foundation](https://signpath.org/),
-which signs open-source projects for free. A signed installer shows a publisher name, and
-the warning goes away once enough people have downloaded it.
+keep the download. Signing through the [SignPath Foundation](https://signpath.org/), which
+signs open-source projects for free, is in progress; see
+[CODE_SIGNING_POLICY.md](CODE_SIGNING_POLICY.md). A signed installer shows a publisher name,
+and the warning goes away once enough people have downloaded signed releases.
+
+## Build on GitHub
+
+The [Windows installer](.github/workflows/build-installer.yml) workflow builds
+`Marteloio-Setup.exe` on a GitHub-hosted Windows machine: for every tag that starts with `v`,
+and by hand from **Actions › Windows installer › Run workflow**. It installs Inno Setup 6.7.3
+(checked against its SHA-256), runs `packaging\build-installer.ps1` and keeps the installer, its
+`.sha256` file and `build.log` as a download on the run's page for 30 days. Only installers
+built this way will be submitted for signing; once SignPath approves the project, a signing
+step is added to this workflow.
 
 ## Release a new version
 

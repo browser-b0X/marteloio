@@ -628,7 +628,7 @@
       </ol>
       <div class="dl-row reveal">
         <a class="btn btn-primary" href="https://github.com/browser-b0X/marteloio/releases/latest/download/Marteloio-Setup.exe"><svg class="icon"><use href="#i-down"/></svg>Download for Windows</a>
-        <p><b>Free · Windows 10 and 11 · about 12 MB.</b> The installer isn't code-signed yet; the plan is to apply to the <a href="https://signpath.org/">SignPath Foundation</a>, which signs open-source projects for free. To check your download: in PowerShell, <code>Get-FileHash .\Marteloio-Setup.exe -Algorithm SHA256</code> should show the same value as <a href="https://github.com/browser-b0X/marteloio/releases/latest/download/Marteloio-Setup.exe.sha256">Marteloio-Setup.exe.sha256</a>.</p>
+        <p><b>Free · Windows 10 and 11 · about 12 MB.</b> The installer isn't code-signed yet; signing through the <a href="https://signpath.org/">SignPath Foundation</a>, which signs open-source projects for free, is in progress (<a href="https://github.com/browser-b0X/marteloio/blob/main/CODE_SIGNING_POLICY.md">Code signing policy</a>). To check your download: in PowerShell, <code>Get-FileHash .\Marteloio-Setup.exe -Algorithm SHA256</code> should show the same value as <a href="https://github.com/browser-b0X/marteloio/releases/latest/download/Marteloio-Setup.exe.sha256">Marteloio-Setup.exe.sha256</a>.</p>
       </div>
       <div class="install">
         <div class="reveal">
@@ -667,7 +667,7 @@
       </div>
       <div class="faq">
         <details class="reveal"><summary>Is it really free?</summary><p>Yes. Marteloio is MIT-licensed open source with no paid tier. The AI comes from your own keys: Google Gemini, Groq and OpenRouter each offer a free tier with limits they set, and FreeLLMAPI spreads requests over many free services. Templates and single-section regeneration help you stay inside them.</p></details>
-        <details class="reveal"><summary>Why does Windows warn me about the installer?</summary><p>Marteloio-Setup.exe isn't code-signed yet, so Windows SmartScreen doesn't know who made it and shows "Windows protected your PC". Choose More info, then Run anyway. The plan is to apply to the SignPath Foundation, which signs open-source projects for free. Until then you can <a href="https://github.com/browser-b0X/marteloio/blob/main/SECURITY.md#checking-the-installer">check the file's SHA-256</a> against the one on the release page.</p></details>
+        <details class="reveal"><summary>Why does Windows warn me about the installer?</summary><p>Marteloio-Setup.exe isn't code-signed yet, so Windows SmartScreen doesn't know who made it and shows "Windows protected your PC". Choose More info, then Run anyway. Signing through the SignPath Foundation, which signs open-source projects for free, is in progress; see the <a href="https://github.com/browser-b0X/marteloio/blob/main/CODE_SIGNING_POLICY.md">code signing policy</a>. Until then you can <a href="https://github.com/browser-b0X/marteloio/blob/main/SECURITY.md#checking-the-installer">check the file's SHA-256</a> against the one on the release page.</p></details>
         <details class="reveal"><summary>How do I update or uninstall it?</summary><p>To update, download the newer Marteloio-Setup.exe and run it. It closes Marteloio, replaces the program and keeps your keys, settings and drafts. To uninstall, open Windows Settings › Apps, choose Marteloio, then Uninstall. It asks whether to remove your saved keys and settings too; the default keeps them.</p></details>
         <details class="reveal"><summary>Does it post listings to eBay for me?</summary><p>No. Marteloio drafts the title and the description HTML. You copy them into eBay's listing form, check the preview, and publish yourself.</p></details>
         <details class="reveal"><summary>Do I need an eBay developer account?</summary><p>Only for Look up and Find keywords, which search other sellers' listings through eBay's Browse API. A free eBay Developers account gives you the keys. Everything else works without it.</p></details>
@@ -710,6 +710,8 @@
       <a href="https://github.com/browser-b0X/marteloio/blob/main/LICENSE">License</a>
       <a href="https://github.com/browser-b0X/marteloio/blob/main/TRADEMARKS.md">Name and logo</a>
       <a href="https://github.com/browser-b0X/marteloio/blob/main/SECURITY.md">Security</a>
+      <a href="https://github.com/browser-b0X/marteloio/blob/main/CODE_SIGNING_POLICY.md">Code signing policy</a>
+      <a href="https://github.com/browser-b0X/marteloio/blob/main/CODE_OF_CONDUCT.md">Code of conduct</a>
       <a href="https://github.com/browser-b0X/marteloio/issues">Issues</a>
     </nav>
   </div>

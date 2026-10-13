@@ -1,0 +1,56 @@
+name: Windows installer
+
+# Builds Marteloio-Setup.exe on a GitHub-hosted Windows machine from this repository, so the
+# file that gets signed and published is a verifiable build of the source code. Runs for
+# release tags (v*) and by hand (Actions > Windows installer > Run workflow).
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installer-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Inno Setup 6.7.3 (official release, pinned SHA-256)
+        shell: pwsh
+        run: |
+          $url = 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe'
+          $expected = '9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732'
+          $setup = Join-Path $env:RUNNER_TEMP 'innosetup-6.7.3.exe'
+          Invoke-WebRequest -Uri $url -OutFile $setup
+          $hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $expected) { throw "The Inno Setup download has SHA-256 $hash, expected $expected." }
+          $dir = Join-Path $env:RUNNER_TEMP 'InnoSetup6'
+          $p = Start-Process -FilePath $setup -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', '/CURRENTUSER', "/DIR=`"$dir`"") -Wait -PassThru
+          if ($p.ExitCode -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $dir 'ISCC.exe'))) { throw "Inno Setup did not install (exit code $($p.ExitCode))." }
+          # First on PATH, so this exact version is used even if the image has another one.
+          Add-Content -Path $env:GITHUB_PATH -Value $dir
+      - name: Build Marteloio-Setup.exe
+        shell: powershell
+        run: ./packaging/build-installer.ps1
+      - name: Show the checksum
+        shell: pwsh
+        run: Get-Content -LiteralPath packaging/dist/Marteloio-Setup.exe.sha256
+      - name: Upload the installer
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Marteloio-Setup
+          path: |
+            packaging/dist/Marteloio-Setup.exe
+            packaging/dist/Marteloio-Setup.exe.sha256
+            packaging/dist/build.log
+          if-no-files-found: error
+          retention-days: 30

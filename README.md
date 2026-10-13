@@ -22,6 +22,7 @@ SHA-256 as [Marteloio-Setup.exe.sha256](https://github.com/browser-b0X/marteloio
 [Website](https://browser-b0x.github.io/marteloio/) ·
 [User guide](docs/GUIDE.md) ·
 [What's new](CHANGELOG.md) ·
+[Code signing policy](CODE_SIGNING_POLICY.md) ·
 [Report a bug or suggest an idea](https://github.com/browser-b0X/marteloio/issues)
 
 ![Marteloio in dark mode: seller notes for a film camera on the left; the drafted title with its 80-character ruler and the styled listing preview on the right](docs/screenshots/app-dark.webp)
@@ -97,7 +98,8 @@ and open it (see [What happens next](#what-happens-next) for the two warnings). 
 To stop Marteloio, use Start menu › **Stop Marteloio** or Settings › About › **Quit Marteloio**.
 Get Marteloio only from this repository or its website; see
 [Official sources](SECURITY.md#official-sources). Already using the ZIP version? See
-[Moving from the ZIP version](docs/GUIDE.md#moving-from-the-zip-version).
+[Moving from the ZIP version](docs/GUIDE.md#moving-from-the-zip-version). How the installer is
+built and will be signed: [Code signing policy](CODE_SIGNING_POLICY.md).
 
 ### Mac, Linux or running from source
 
@@ -260,7 +262,8 @@ On Windows, also run `tests/test_stop_services.ps1` and `tests/test_create_short
 with `powershell -NoProfile -ExecutionPolicy Bypass -File`.
 All checks use synthetic data and mocked services; they do not contact AI services
 or eBay. The same offline checks run in GitHub Actions on Windows and Linux.
-[BUILDING.md](BUILDING.md) explains how to build and publish the Windows installer, and
+[BUILDING.md](BUILDING.md) explains how to build and publish the Windows installer (GitHub
+Actions also builds it for every release tag), and
 [CHANGELOG.md](CHANGELOG.md) lists what changed in each version.
 
 ## Security
@@ -274,7 +277,8 @@ Help make **browser-b0X** better.
 - 🐛 **Found a bug?** Submit a structured [Bug Report](https://github.com/browser-b0X/marteloio/issues/new/choose).
   Help (**?**) › **Report a problem** in the app opens the same page.
 - 💡 **Have an idea or question?** Start a discussion in [GitHub Discussions](https://github.com/browser-b0X/marteloio/discussions)
-- 🤝 **Want to contribute?** Pull requests and improvements are always welcome.
+- 🤝 **Want to contribute?** Pull requests and improvements are always welcome. Please follow
+  the [Code of conduct](CODE_OF_CONDUCT.md).
 
 ## Support the project
 

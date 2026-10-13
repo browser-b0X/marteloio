@@ -36,9 +36,9 @@ own Python, so there is nothing else to install. Get it only from the
    Keep it: in Edge choose **…** › **Keep** › **Show more** › **Keep anyway**. Other browsers
    have a similar **Keep** choice in their download list.
 2. Open the file. If Windows shows **"Windows protected your PC"**, choose **More info**, then
-   **Run anyway**. The warning appears because the installer isn't code-signed yet; the plan
-   is to apply to the [SignPath Foundation](https://signpath.org/), which signs open-source
-   projects for free. To check the file first, see
+   **Run anyway**. The warning appears because the installer isn't code-signed yet; signing
+   through the [SignPath Foundation](https://signpath.org/), which signs open-source projects
+   for free, is in progress (see the [code signing policy](../CODE_SIGNING_POLICY.md)). To check the file first, see
    [Checking the installer](../SECURITY.md#checking-the-installer).
 3. Setup has one page, **Install Marteloio**. Tick or untick **Add a Marteloio shortcut to the
    desktop**, then choose **Install**. There is no administrator prompt: Marteloio is installed

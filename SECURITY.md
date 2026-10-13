@@ -36,8 +36,9 @@ If the values differ, don't run the file. Download it again from the Releases pa
 it if it still differs.
 
 The installer isn't code-signed yet, so Windows SmartScreen shows "Windows protected your PC"
-and an unknown publisher. The plan is to apply to the [SignPath Foundation](https://signpath.org/),
-which signs open-source projects for free. A matching checksum shows that you have the file
+and an unknown publisher. Signing through the [SignPath Foundation](https://signpath.org/), which
+signs open-source projects for free, is in progress; see the
+[code signing policy](CODE_SIGNING_POLICY.md). A matching checksum shows that you have the file
 that was published on the Releases page; it doesn't replace a signature.
 
 ## Where Marteloio keeps your data
