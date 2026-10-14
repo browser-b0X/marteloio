@@ -20,6 +20,10 @@ certificate by [SignPath Foundation](https://signpath.org/).
 - The installer includes the official Windows embeddable package of Python from python.org,
   unchanged and checked against its published SHA-256 when the installer is built. Those files
   are already signed by the Python Software Foundation and are not signed again.
+- Everything in the installer is open source: Marteloio's code and logo files (MIT License),
+  the Manrope and Space Grotesk fonts (SIL Open Font License 1.1) and Python (PSF License,
+  with the open-source licenses of the libraries Python includes). The Marteloio name and
+  logo are the project's trademarks; see [TRADEMARKS.md](TRADEMARKS.md).
 
 ## Team and roles
 

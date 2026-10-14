@@ -297,12 +297,13 @@ Help make **browser-b0X** better.
 
 ## License
 
-The source code is [MIT](LICENSE), copyright 2026 browser-b0X.
+The source code and the logo files are [MIT](LICENSE), copyright 2026 browser-b0X.
 
-The **Marteloio name and logo are not covered by the MIT License**; they are reserved
-so that people can tell the official app from modified copies. Forks are welcome under a
-different name and logo. See [TRADEMARKS.md](TRADEMARKS.md). The only official sources are
-this repository and [its website](https://browser-b0x.github.io/marteloio/).
+The MIT License lets you copy and change the files, but not present your version as
+Marteloio: the **Marteloio name and logo are the project's trademarks**, kept for the official
+app so that people can tell it from modified copies. Forks are welcome under a different name
+and logo. See [TRADEMARKS.md](TRADEMARKS.md). The only official sources are this repository
+and [its website](https://browser-b0x.github.io/marteloio/).
 
 The bundled Manrope and Space Grotesk fonts are under the SIL Open Font License
 ([Manrope](assets/fonts/OFL-Manrope.txt), [Space Grotesk](assets/fonts/OFL-SpaceGrotesk.txt)).

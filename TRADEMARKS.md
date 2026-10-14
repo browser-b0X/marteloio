@@ -1,12 +1,15 @@
 # Marteloio name and logo
 
-Marteloio's source code is free and open source under the [MIT License](LICENSE). You can
-use, change and share the code, including in your own fork or product.
+Marteloio's source code and its logo files are free and open source under the
+[MIT License](LICENSE). You can use, change and share them, including in your own fork or
+product. The bundled fonts have their own open license (see the [README](README.md#license)).
 
-The **Marteloio name, the Marteloio logo and symbol, and the "Details, drafted." tagline**
-are the project's brand and are **not** licensed under the MIT License. They are reserved
-by browser-b0X. This covers the files in `assets/brand/`, the favicon, header and social-preview images
-in `docs/assets/`, and any name or logo close enough to be mistaken for them.
+The MIT License lets you copy the files. It doesn't let you use the **Marteloio name, the
+Marteloio logo and symbol, or the "Details, drafted." tagline** as the name or brand of your
+own version. They are the project's trademarks, kept by browser-b0X for the official project.
+This covers the name, the logo and symbol in `assets/brand/`, the favicon, header and
+social-preview images in `docs/assets/`, and any name or logo close enough to be mistaken for
+them.
 
 ## Why
 

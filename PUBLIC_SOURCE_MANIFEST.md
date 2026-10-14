@@ -14,7 +14,8 @@ output (`packaging/cache/`, `packaging/build/`, `packaging/dist/`, including
 brand working files outside the repository. Ignored secret files must not be opened, copied or
 hashed.
 
-The Marteloio name and logo are reserved (see `TRADEMARKS.md`). Screenshots in
+The logo files are MIT-licensed like the code; the Marteloio name and logo are the project's
+trademarks (see `TRADEMARKS.md`). Screenshots in
 `docs/screenshots/` were captured from the app with made-up items and mocked services. Tests
 use synthetic data and never contact AI services or eBay.
 
