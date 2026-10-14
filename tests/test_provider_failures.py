@@ -73,7 +73,12 @@ class ProviderFailureTests(unittest.TestCase):
         kwargs = call.call_args.kwargs
         self.assertEqual(kwargs["keys"], {"GROQ_API_KEY": "fixture-key"})
         self.assertEqual((kwargs["temperature"], kwargs["max_tokens"], kwargs["json_mode"]), (1.0, 3000, True))
-        self.assertLessEqual(kwargs["deadline"] - server.time.monotonic(), server.COMPLETION_DEADLINE)
+        remaining = kwargs["deadline"] - server.time.monotonic()
+        # The Windows clock can stand still between the two readings, and the subtraction can then
+        # land a floating-point rounding error above the limit (160.00000000000003), so allow a
+        # microsecond.
+        self.assertGreater(remaining, server.COMPLETION_DEADLINE - 5)
+        self.assertLessEqual(remaining, server.COMPLETION_DEADLINE + 1e-6)
         self.assertNotIn("fallbacks", kwargs)
 
     def test_optional_max_tokens_is_passed_through_and_defaults_to_full_budget(self):
