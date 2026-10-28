@@ -5,6 +5,8 @@
   </picture>
 </h1>
 
+https://github.com/user-attachments/assets/8fc3b121-e0c3-4f9c-b423-35f9e0eee4c2
+
 **Details, drafted.** Marteloio turns the notes you jot about an item into an eBay
 title and description you can paste straight in. It runs on your own computer,
 works with free AI keys, and leaves every fact for you to check.
