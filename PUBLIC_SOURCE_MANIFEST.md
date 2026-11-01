@@ -1,6 +1,6 @@
 # Marteloio — public source manifest
 
-Exact curated file set for the public repository: **101 files**. Only these files may
+Exact curated file set for the public repository: **103 files**. Only these files may
 enter the public branch. Listing a file here is not by itself permission to commit,
 push or publish.
 
@@ -16,7 +16,7 @@ hashed.
 
 The logo files are MIT-licensed like the code; the Marteloio name and logo are the project's
 trademarks (see `TRADEMARKS.md`). Screenshots in
-`docs/screenshots/` were captured from the app with made-up items and mocked services. Tests
+`docs/screenshots/` and the demo GIFs `docs/demo-dark.gif` and `docs/demo-light.gif` were captured from the app with made-up items and mocked services. Tests
 use synthetic data and never contact AI services or eBay.
 
 ## Exact files
@@ -66,6 +66,8 @@ use synthetic data and never contact AI services or eBay.
 - `docs/assets/readme-header-dark.png`
 - `docs/assets/readme-header-light.png`
 - `docs/assets/social-preview.png`
+- `docs/demo-dark.gif`
+- `docs/demo-light.gif`
 - `docs/index.html`
 - `docs/screenshots/app-bundle-dark.webp`
 - `docs/screenshots/app-bundle-light.webp`
