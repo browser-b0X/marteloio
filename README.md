@@ -268,6 +268,13 @@ or eBay. The same offline checks run in GitHub Actions on Windows and Linux.
 Actions also builds it for every release tag), and
 [CHANGELOG.md](CHANGELOG.md) lists what changed in each version.
 
+## How it's built
+
+Marteloio is designed by browser-b0X, who decides what it does and how it looks, directs the
+build with [Claude Code](https://claude.com/claude-code) and tests every release by using the
+app. Claude Code writes the code from those plans, and Claude is credited as a co-author on
+the commits.
+
 ## Security
 
 See [SECURITY.md](SECURITY.md) before sharing logs, screenshots or bug reports.
