@@ -5,7 +5,7 @@
   </picture>
 </h1>
 
-https://github.com/user-attachments/assets/8fc3b121-e0c3-4f9c-b423-35f9e0eee4c2
+https://github.com/user-attachments/assets/82a54639-f48c-495b-b00c-38b58c5dc29d
 
 **Details, drafted.** Marteloio turns the notes you jot about an item into an eBay
 title and description you can paste straight in. It runs on your own computer,
@@ -27,9 +27,12 @@ SHA-256 as [Marteloio-Setup.exe.sha256](https://github.com/browser-b0X/marteloio
 [Code signing policy](CODE_SIGNING_POLICY.md) ·
 [Report a bug or suggest an idea](https://github.com/browser-b0X/marteloio/issues)
 
-![Marteloio in dark mode: seller notes for a film camera on the left; the drafted title with its 80-character ruler and the styled listing preview on the right](docs/screenshots/app-dark.webp)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/demo-dark.gif">
+  <img src="docs/demo-light.gif" alt="Generate listing is pressed under the seller's notes for a film camera, and the drafted title with its 80-character ruler and the listing preview appear on the right" width="100%">
+</picture>
 
-<sub>Screenshots show made-up items, not real seller data.</sub>
+<sub>The demo and screenshots use made-up items, not real seller data. The listing in the demo is a written sample, not a live AI answer.</sub>
 
 ## What happens next
 
@@ -146,13 +149,16 @@ is skipped until it is ready again, and a key that was turned down stays off unt
 replace it. Each service has a **Use** switch to skip it without removing its key. The AI
 button in the header says **Set up AI** until a service is connected, then **AI ready**.
 
-## Optional eBay connection
+## Optional eBay keys
 
 **Look up** and **Find keywords** search other sellers' eBay listings through eBay's
 Browse API. They need application keys from a free
 [eBay Developers](https://developer.ebay.com/) account, entered in Settings › eBay.
-Connecting your eBay account there also fills in your feedback numbers; you can type them in
-Settings › Your shop instead. Everything else works without eBay keys.
+Everything else works without eBay keys.
+
+Marteloio never signs in to your eBay account and reads nothing from it. If you want your
+feedback score, positive % and member-since year in the listing's seller header, type them
+in Settings › Your shop.
 
 References are other sellers' listing data, not manufacturer specifications. They
 reach the AI as a separately labelled block and never change your condition, flaws,
@@ -205,7 +211,8 @@ Marteloio is local-first, not offline:
   FreeLLMAPI on your PC or home network, which passes it to the services you set up there.
 - **Testing a key** sends one tiny request to that service.
 - **Look up** and **Find keywords** send the product name or barcode to eBay.
-- **Connect eBay** and your feedback numbers contact eBay only when you use them.
+- Nothing else contacts eBay. Marteloio doesn't sign in to your eBay account, and it keeps
+  only a found listing's title, link and product details, nothing about its seller.
 - Looking for FreeLLMAPI (in the welcome setup and Settings › AI) only checks this computer.
 - The app loads no remote fonts, scripts or analytics. Images you add to a listing
   by web address (such as a store logo) are fetched by your browser.
@@ -236,6 +243,26 @@ shortcuts, and delete the folder.
 
 More in the [user guide](docs/GUIDE.md#troubleshooting).
 
+## How it's built
+
+Marteloio is a local web app: a small Python relay on your computer serves the page you use in
+your browser and passes its requests on to your AI service and, if you add eBay keys, to eBay's
+listing search.
+
+| Part | Built with |
+| --- | --- |
+| Interface | One HTML page with plain JavaScript and CSS, no framework, and the Manrope and Space Grotesk fonts |
+| Local relay | Python's standard library only; on Windows your keys are encrypted with Windows' own data protection (DPAPI) |
+| AI writing | Free keys for Google Gemini, Groq or OpenRouter, or a FreeLLMAPI server, tried in order |
+| eBay (optional) | eBay's Browse API for Look up and Find keywords, with application keys only |
+| Installer | Inno Setup with the official embeddable Python, built by GitHub Actions for each release |
+| Checks | Offline Python and Node tests with made-up data, run in GitHub Actions on Windows and Linux, and a browser check run by hand |
+
+Much of Marteloio's code was written with [Claude Code](https://claude.com/claude-code). browser-b0X
+designs the app, decides what it does and how it looks, and directs the build. Every change runs the
+offline checks below in GitHub Actions, and browser-b0X tests each release by using the app. Claude
+is credited as a co-author on the commits.
+
 ## Development
 
 | File | Purpose |
@@ -249,7 +276,7 @@ More in the [user guide](docs/GUIDE.md#troubleshooting).
 | `stop-services.ps1` | Windows ownership checks for `stop.bat` and `relaunch.bat` |
 | `create-shortcuts.ps1` | Start menu and desktop shortcuts for a ZIP or source copy |
 | `packaging/` | The Windows installer; see [BUILDING.md](BUILDING.md) |
-| `docs/` | The project website, the user guide and screenshots |
+| `docs/` | The project website, the user guide, screenshots and the demo GIFs |
 | `tests/` | Offline Python, Node and browser checks |
 
 Run the checks:
@@ -267,13 +294,6 @@ or eBay. The same offline checks run in GitHub Actions on Windows and Linux.
 [BUILDING.md](BUILDING.md) explains how to build and publish the Windows installer (GitHub
 Actions also builds it for every release tag), and
 [CHANGELOG.md](CHANGELOG.md) lists what changed in each version.
-
-## How it's built
-
-Marteloio is designed by browser-b0X, who decides what it does and how it looks, directs the
-build with [Claude Code](https://claude.com/claude-code) and tests every release by using the
-app. Claude Code writes the code from those plans, and Claude is credited as a co-author on
-the commits.
 
 ## Security
 

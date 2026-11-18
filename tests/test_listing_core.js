@@ -378,7 +378,7 @@ check('messages: every error kind has plain words, and the fixable ones name the
   const {ERROR_MESSAGES, hasJargon, errorFix} = require('../listing-core.js');
   const kinds = ['no_provider', 'provider_busy', 'provider_auth', 'provider_timeout', 'provider_request', 'provider_storage', 'local_busy',
     'notes_too_long', 'ebay_not_configured', 'ebay_auth', 'ebay_unavailable', 'ebay_listing_gone', 'invalid_barcode', 'ebay_busy',
-    'ebay_storage', 'ebay_no_details', 'ebay_not_connected', 'ebay_connect_failed', 'ebay_storage_write', 'provider_storage_write',
+    'ebay_storage', 'ebay_no_details', 'ebay_storage_write', 'provider_storage_write',
     'invalid_request', 'not_found', 'forbidden', 'session_expired', 'server_error', 'unknown_key', 'invalid_key', 'invalid_url', 'nothing_to_save'];
   for (const kind of kinds) assert.ok(ERROR_MESSAGES[kind], kind);
   for (const [kind, entry] of Object.entries(ERROR_MESSAGES)) {
@@ -388,7 +388,8 @@ check('messages: every error kind has plain words, and the fixable ones name the
     }
   }
   assert.deepEqual(['no_provider', 'provider_auth', 'provider_storage'].map(errorFix), ['ai', 'ai', 'ai']);
-  assert.deepEqual(['ebay_not_configured', 'ebay_auth', 'ebay_not_connected'].map(errorFix), ['ebay', 'ebay', 'ebay']);
+  assert.deepEqual(['ebay_not_configured', 'ebay_auth', 'ebay_storage'].map(errorFix), ['ebay', 'ebay', 'ebay']);
+  for (const gone of ['ebay_not_connected', 'ebay_connect_failed']) assert.equal(ERROR_MESSAGES[gone], undefined, gone + ' went with the eBay account sign-in (0.3.0)');
   assert.deepEqual(['provider_busy', 'ebay_unavailable', 'nonsense', '', undefined].map(errorFix), ['', '', '', '', '']);
   assert.equal(ERROR_MESSAGES.no_provider.text, 'Connect an AI service first. It takes about 2 minutes with a free Google key.');
   assert.equal(ERROR_MESSAGES.ebay_not_configured.text, 'Look up needs an eBay key (optional). Add one in Settings › eBay, or just describe the item.');

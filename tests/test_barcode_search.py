@@ -61,7 +61,7 @@ class BarcodeSearchTests(unittest.TestCase):
                     'refinement': {'aspectDistributions': 'malformed-unused-fixture'}}
         with patch.object(server, 'app_token_fresh', return_value='fixture'), patch.object(server, 'http_get', return_value=(200, json.dumps(response))):
             result = server.browse_search('Camera', 20)
-        self.assertEqual(result['items'], [{'title':'Good camera', 'url':'', 'seller_feedback':'', 'seller_pct':''}])
+        self.assertEqual(result['items'], [{'title':'Good camera', 'url':''}])
         self.assertEqual(result['aspects'], {})
 
     def test_malformed_search_response_is_not_an_empty_success(self):

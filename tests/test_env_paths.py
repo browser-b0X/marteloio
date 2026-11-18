@@ -322,24 +322,21 @@ class MigrateSecretsTests(IsolatedCredentialPaths):
 
     def test_a_confirmed_store_write_is_what_licenses_destroying_the_plaintext(self):
         self.seed_env()
-        self.seed_token()
         with patch.dict(os.environ, {"EBAY_CLIENT_ID": self.CID, "EBAY_CLIENT_SECRET": self.CSEC}):
             logged = self.migrate()
             self.assertFalse("EBAY_CLIENT_ID" in os.environ, "Migrated client ID remained in the environment")
             self.assertFalse("EBAY_CLIENT_SECRET" in os.environ, "Migrated client secret remained in the environment")
-        self.assertIn("migrated eBay credentials/token", logged)
+        self.assertIn("migrated eBay app keys", logged)
         stored = server.load_secrets()
         self.assertEqual(stored["ebay_client_id"], self.CID)
         self.assertEqual(stored["ebay_client_secret"], self.CSEC)
-        self.assertEqual(stored["token"], self.TOKEN)
-        self.assertEqual(server.read_token(), self.TOKEN)
+        self.assertNotIn("token", stored)
         env_text = self.read()
         self.assertNotIn("EBAY_CLIENT_ID", env_text)
         self.assertNotIn("EBAY_CLIENT_SECRET", env_text)
         self.assertNotIn(self.CSEC, env_text)
         self.assertIn("# provider keys stay put", env_text)
         self.assertIn("GROQ_API_KEY=gsk_keep", env_text)
-        self.assertFalse(os.path.exists(server.TOKEN_PATH))
         with open(server.SECRETS_PATH, "rb") as handle:
             self.assertNotIn(self.CSEC.encode(), handle.read())
         self.assertNoTempLeftovers()
@@ -359,22 +356,17 @@ class MigrateSecretsTests(IsolatedCredentialPaths):
 
     def test_a_failed_store_write_leaves_every_plaintext_copy_in_place(self):
         self.seed_env()
-        self.seed_token()
         env_before = self.read()
         with patch.object(server, "save_secrets", return_value=False):
             logged = self.migrate()
         self.assertIn("leaving plaintext in place", logged)
         self.assertEqual(self.read(), env_before)
         self.assertIn(self.CSEC, self.read())
-        self.assertTrue(os.path.exists(server.TOKEN_PATH), "the token was deleted before it was encrypted")
-        with open(server.TOKEN_PATH, encoding="utf-8") as handle:
-            self.assertEqual(json.load(handle), self.TOKEN)
         self.assertFalse(os.path.exists(server.SECRETS_PATH))
         self.assertNoTempLeftovers()
 
     def test_a_store_it_cannot_read_is_never_overwritten(self):
         self.seed_env()
-        self.seed_token()
         with open(server.SECRETS_PATH, "w", encoding="utf-8") as handle:
             handle.write("!!!not-valid-base64-or-ciphertext!!!")
         corrupt_before = snapshot(server.SECRETS_PATH)
@@ -384,21 +376,41 @@ class MigrateSecretsTests(IsolatedCredentialPaths):
         self.assertEqual(snapshot(server.SECRETS_PATH), corrupt_before)
         self.assertEqual(self.read(), env_before)
         self.assertEqual(server.read_env()["EBAY_CLIENT_SECRET"], self.CSEC)
-        self.assertTrue(os.path.exists(server.TOKEN_PATH))
         self.assertNoTempLeftovers()
 
-    def test_an_unparseable_token_file_survives_while_credentials_still_move(self):
+    def test_a_file_that_is_not_a_sign_in_survives_while_credentials_still_move(self):
         self.seed_env()
         with open(server.TOKEN_PATH, "w", encoding="utf-8") as handle:
             handle.write("{not json")
         with patch.dict(os.environ):
+            captured = io.StringIO()
+            with contextlib.redirect_stdout(captured):
+                server.forget_saved_sign_in()
+            self.assertIn("left in place", captured.getvalue())
             logged = self.migrate()
-        self.assertIn("migrated eBay credentials/token", logged)
+        self.assertIn("migrated eBay app keys", logged)
         self.assertEqual(server.load_secrets()["ebay_client_id"], self.CID)
         self.assertNotIn("EBAY_CLIENT_ID", self.read())
         self.assertTrue(os.path.exists(server.TOKEN_PATH), "a token file it could not parse was deleted")
         with open(server.TOKEN_PATH, encoding="utf-8") as handle:
             self.assertEqual(handle.read(), "{not json")
+        self.assertNoTempLeftovers()
+
+    def test_a_saved_sign_in_from_an_older_version_is_forgotten_and_keys_are_kept(self):
+        self.assertTrue(server.save_secrets({"ebay_client_id": self.CID, "ebay_client_secret": self.CSEC,
+                                            "provider_keys": {"GROQ_API_KEY": "gsk_keep"}, "token": dict(self.TOKEN)}))
+        self.seed_token()
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            server.forget_saved_sign_in()
+        self.assertIn("removed the eBay account sign-in", captured.getvalue())
+        self.assertEqual(server.load_secrets(), {"ebay_client_id": self.CID, "ebay_client_secret": self.CSEC,
+                                                 "provider_keys": {"GROQ_API_KEY": "gsk_keep"}})
+        self.assertFalse(os.path.exists(server.TOKEN_PATH))
+        captured = io.StringIO()
+        with contextlib.redirect_stdout(captured):
+            server.forget_saved_sign_in()
+        self.assertEqual(captured.getvalue(), "")
         self.assertNoTempLeftovers()
 
     def test_with_nothing_to_migrate_no_store_is_created(self):
@@ -481,15 +493,27 @@ class MigrationFallbackTests(IsolatedCredentialPaths):
 
     def test_without_dpapi_migration_leaves_the_plaintext_alone(self):
         self.seed("EBAY_CLIENT_ID=CID-fallback\nEBAY_CLIENT_SECRET=SEC-fallback\n")
-        with open(server.TOKEN_PATH, "w", encoding="utf-8") as handle:
-            json.dump({"access_token": "plain-fallback"}, handle)
         env_before = self.read()
         with patch.object(server, "dpapi_available", return_value=False):
             captured = io.StringIO()
             with contextlib.redirect_stdout(captured):
                 server.migrate_secrets()
             self.assertIn("DPAPI unavailable", captured.getvalue())
-            self.assertEqual(server.read_token(), {"access_token": "plain-fallback"})
+        self.assertEqual(self.read(), env_before)
+        self.assertFalse(os.path.exists(server.SECRETS_PATH))
+        self.assertNoTempLeftovers()
+
+    def test_without_dpapi_a_plaintext_sign_in_file_is_still_forgotten(self):
+        self.seed("EBAY_CLIENT_ID=CID-fallback\nEBAY_CLIENT_SECRET=SEC-fallback\n")
+        with open(server.TOKEN_PATH, "w", encoding="utf-8") as handle:
+            json.dump({"access_token": "plain-fallback", "refresh_token": "plain-refresh"}, handle)
+        env_before = self.read()
+        with patch.object(server, "dpapi_available", return_value=False):
+            captured = io.StringIO()
+            with contextlib.redirect_stdout(captured):
+                server.forget_saved_sign_in()
+        self.assertIn("removed the eBay account sign-in", captured.getvalue())
+        self.assertFalse(os.path.exists(server.TOKEN_PATH))
         self.assertEqual(self.read(), env_before)
         self.assertFalse(os.path.exists(server.SECRETS_PATH))
         self.assertNoTempLeftovers()

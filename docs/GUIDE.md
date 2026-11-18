@@ -18,7 +18,7 @@ as they appear in the app.
 - [Drafts, history and backups](#drafts-history-and-backups)
 - [Where your data lives](#where-your-data-lives)
 - [Keys and credential storage](#keys-and-credential-storage)
-- [Connecting eBay](#connecting-ebay)
+- [Adding eBay keys](#adding-ebay-keys)
 - [How AI services are chosen](#how-ai-services-are-chosen)
 - [Moving from the ZIP version](#moving-from-the-zip-version)
 - [Updating](#updating)
@@ -227,8 +227,8 @@ it: **Set up AI** or **Open Settings**.
   Positive % and Member since. They build the seller header at the top of each listing and are
   kept in this browser. eBay blocks pictures from other websites in descriptions, so upload
   your logo in any eBay listing draft and paste its `i.ebayimg.com` address.
-- **eBay (optional)**: only needed for Look up, Find keywords and your feedback numbers; see
-  [Connecting eBay](#connecting-ebay).
+- **eBay (optional)**: only needed for Look up and Find keywords; see
+  [Adding eBay keys](#adding-ebay-keys).
 - **About**: the Version and Build (useful in bug reports), the Data folder with **Copy**, links
   to the **User guide**, **Report a problem** and the **License**, and **Quit Marteloio**. Quit
   stops Marteloio on this computer; your drafts stay saved in this browser. The page then says
@@ -313,7 +313,7 @@ specifications against the item in your hands.
 **Keywords from other sellers** to see the source listings. They are suggestions, not
 search-volume data or facts about your item, and the AI is told so.
 
-See [Connecting eBay](#connecting-ebay) for the keys. Editing the product name or barcode
+See [Adding eBay keys](#adding-ebay-keys) for the keys. Editing the product name or barcode
 cancels searches still in progress.
 
 ## Reviewing and editing the listing
@@ -404,8 +404,8 @@ keeps your data in the program folder and ignores a `.env` there. When `relay.lo
 
 ## Keys and credential storage
 
-- **On Windows**, keys saved in Marteloio (AI keys, eBay application keys and eBay sign-in
-  tokens) are encrypted with DPAPI for your Windows account in `.marteloio-secrets.enc` in the
+- **On Windows**, keys saved in Marteloio (AI keys and eBay application keys) are
+  encrypted with DPAPI for your Windows account in `.marteloio-secrets.enc` in the
   data folder. Programs running as your account can still decrypt them. A store that cannot
   be read, for example after moving to another PC or Windows account, is reported, not treated
   as empty. When you paste a key again, Marteloio keeps the unreadable file under a new name
@@ -413,10 +413,13 @@ keeps your data in the program folder and ignores a `.env` there. When `relay.lo
 - Keys typed directly into `.env` stay in plain text until you paste them into Marteloio,
   which moves them into the encrypted store and removes them from `.env`. Saved settings,
   including removals, take precedence over `.env`.
-- **Without DPAPI** (macOS, Linux), keys use plain-text `.env` and eBay tokens use
-  `.ebay_token.json`. `.gitignore` keeps these out of commits; it is not encryption.
-- Seller details (store name, logo address, statistics, RuName) are stored in the browser.
+- **Without DPAPI** (macOS, Linux), keys use plain-text `.env`. `.gitignore` keeps it out
+  of commits; it is not encryption.
+- Seller details (store name, logo address, statistics) are stored in the browser.
   Keys never are.
+- Version 0.2.0 and earlier could sign in to your eBay account. From 0.3.0 Marteloio no
+  longer does, and the first time it starts it deletes the saved sign-in (from the encrypted
+  store, or `.ebay_token.json` without DPAPI) and the RuName kept in the browser.
 - To replace an AI key, paste the new one; to delete it, use **Remove** on its line in
   Settings › AI. For eBay keys, leave a box empty to keep what's saved.
 
@@ -425,20 +428,21 @@ address, and responses larger than 4 MB are refused. Each key is sent only to it
 service, and FreeLLMAPI's address must be on this computer or your home network. Errors from
 AI services are kept with keys redacted and are not shown in the browser.
 
-## Connecting eBay
+## Adding eBay keys
+
+eBay keys are optional. They are only used by **Look up** and **Find keywords**, which search
+other sellers' listings.
 
 1. Create a free account at [eBay Developers](https://developer.ebay.com/) and an
    application with production keys.
 2. In Settings › eBay, enter the Client ID and Client Secret and choose **Save eBay keys**.
    Look up and Find keywords now work.
-3. For your feedback numbers, also enter the application's RuName and choose **Connect
-   eBay**, then **Open the eBay sign-in page**. Approve on eBay, copy the whole web address
-   you land on, paste it into the box and choose **Finish connecting**. **Get my feedback
-   numbers** then fills them in under Settings › Your shop.
 
-A new connection replaces the previous account's tokens. Refreshing keeps the existing
-refresh token when eBay doesn't return a new one. The full sign-in flow should be checked
-with your own account before you rely on it.
+Marteloio uses these keys for searches only. It never signs in to your eBay account, so it
+can't read your feedback numbers: copy your feedback score, positive % and member-since year
+from your eBay profile page into Settings › Your shop if you want them in the seller header.
+From a found listing it keeps the title, the link and the product details you accept, and
+nothing about its seller.
 
 ## How AI services are chosen
 

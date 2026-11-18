@@ -57,9 +57,8 @@ keeps it.
 Do not publicly attach:
 
 - `.env`, `.marteloio-secrets.enc` (and any `.marteloio-secrets.unreadable-*.enc`),
-  `.ebay_token.json` or any other file holding keys or tokens;
-- AI keys, eBay Client ID/Secret, RuName, authorization codes or redirect web addresses
-  containing them;
+  `.ebay_token.json` (left by version 0.2.0 or earlier) or any other file holding keys;
+- AI keys or the eBay Client ID/Secret;
 - `relay.log` or `relay.log.1` before you have read and redacted it;
 - draft backup files or screenshots containing real items, seller details or statistics
   you don't want public.
@@ -76,8 +75,10 @@ loads no remote scripts, fonts or analytics.
 
 On Windows, keys saved in Marteloio are encrypted with DPAPI for the current Windows account.
 This protects them at rest from other accounts, not from programs running as you, and it is
-not a defence against a compromised Windows account. Without DPAPI, keys and eBay tokens
-are stored in plain text (`.env`, `.ebay_token.json`) with normal file permissions. Keys are
+not a defence against a compromised Windows account. Without DPAPI, keys
+are stored in plain text (`.env`) with normal file permissions. Marteloio does not sign in to
+eBay accounts; a sign-in saved by version 0.2.0 or earlier is deleted the first time a newer
+version starts. Keys are
 never stored in browser storage, are sent only to their own service, and are redacted from
 the service errors kept by the relay. A FreeLLMAPI address must be on this computer or the
 home network, and it is never reached through a proxy.
