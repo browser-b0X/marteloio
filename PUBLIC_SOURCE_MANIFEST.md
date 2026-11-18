@@ -107,13 +107,13 @@ use synthetic data and never contact AI services or eBay.
 - `tests/test_barcode_search.py`
 - `tests/test_completion_capacity.py`
 - `tests/test_create_shortcuts.ps1`
+- `tests/test_ebay_app_token.py`
 - `tests/test_env_paths.py`
 - `tests/test_fixes_v020.py`
 - `tests/test_freellmapi.py`
 - `tests/test_http_rejections.py`
 - `tests/test_launch.py`
 - `tests/test_listing_core.js`
-- `tests/test_oauth_tokens.py`
 - `tests/test_outbound_requests.py`
 - `tests/test_packaging.py`
 - `tests/test_product_reference.py`

@@ -149,13 +149,16 @@ is skipped until it is ready again, and a key that was turned down stays off unt
 replace it. Each service has a **Use** switch to skip it without removing its key. The AI
 button in the header says **Set up AI** until a service is connected, then **AI ready**.
 
-## Optional eBay connection
+## Optional eBay keys
 
 **Look up** and **Find keywords** search other sellers' eBay listings through eBay's
 Browse API. They need application keys from a free
 [eBay Developers](https://developer.ebay.com/) account, entered in Settings › eBay.
-Connecting your eBay account there also fills in your feedback numbers; you can type them in
-Settings › Your shop instead. Everything else works without eBay keys.
+Everything else works without eBay keys.
+
+Marteloio never signs in to your eBay account and reads nothing from it. If you want your
+feedback score, positive % and member-since year in the listing's seller header, type them
+in Settings › Your shop.
 
 References are other sellers' listing data, not manufacturer specifications. They
 reach the AI as a separately labelled block and never change your condition, flaws,
@@ -208,7 +211,8 @@ Marteloio is local-first, not offline:
   FreeLLMAPI on your PC or home network, which passes it to the services you set up there.
 - **Testing a key** sends one tiny request to that service.
 - **Look up** and **Find keywords** send the product name or barcode to eBay.
-- **Connect eBay** and your feedback numbers contact eBay only when you use them.
+- Nothing else contacts eBay. Marteloio doesn't sign in to your eBay account, and it keeps
+  only a found listing's title, link and product details, nothing about its seller.
 - Looking for FreeLLMAPI (in the welcome setup and Settings › AI) only checks this computer.
 - The app loads no remote fonts, scripts or analytics. Images you add to a listing
   by web address (such as a store logo) are fetched by your browser.
@@ -242,14 +246,15 @@ More in the [user guide](docs/GUIDE.md#troubleshooting).
 ## How it's built
 
 Marteloio is a local web app: a small Python relay on your computer serves the page you use in
-your browser and passes its requests on to your AI service and, if you connect it, eBay.
+your browser and passes its requests on to your AI service and, if you add eBay keys, to eBay's
+listing search.
 
 | Part | Built with |
 | --- | --- |
 | Interface | One HTML page with plain JavaScript and CSS, no framework, and the Manrope and Space Grotesk fonts |
 | Local relay | Python's standard library only; on Windows your keys are encrypted with Windows' own data protection (DPAPI) |
 | AI writing | Free keys for Google Gemini, Groq or OpenRouter, or a FreeLLMAPI server, tried in order |
-| eBay (optional) | eBay's Browse API for Look up and Find keywords, and its Trading API for your feedback numbers |
+| eBay (optional) | eBay's Browse API for Look up and Find keywords, with application keys only |
 | Installer | Inno Setup with the official embeddable Python, built by GitHub Actions for each release |
 | Checks | Offline Python and Node tests with made-up data, run in GitHub Actions on Windows and Linux, and a browser check run by hand |
 

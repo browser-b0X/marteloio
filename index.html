@@ -2056,13 +2056,13 @@ setAppTheme(readAppTheme());
         </div>
         <div class="hint" id="fbPctError" style="color:var(--err)" hidden></div>
         <div class="hint" id="memberYearError" style="color:var(--err)" hidden></div>
-        <div class="hint">Filled in for you when you connect eBay in Settings › eBay. You can change them any time.</div>
+        <div class="hint">Copy these from your eBay profile page. They are optional, and you can change them any time.</div>
       </section>
 
       <section class="settings-pane" role="tabpanel" id="settingsPane-ebay" aria-labelledby="settingsTab-ebay" hidden>
-        <p class="settings-lead">Optional. Only needed for Look up, Find keywords and your feedback numbers.</p>
+        <p class="settings-lead">Optional. Only needed for Look up and Find keywords, which search other sellers' listings. Marteloio never signs in to your eBay account.</p>
         <h3 class="settings-subhead">Your eBay keys</h3>
-        <div class="hint">Get a Client ID, Client Secret and RuName by making a free app at <a class="ext" href="https://developer.ebay.com/" target="_blank" rel="noopener noreferrer">developer.ebay.com</a>.</div>
+        <div class="hint">Get a Client ID and Client Secret by making a free app at <a class="ext" href="https://developer.ebay.com/" target="_blank" rel="noopener noreferrer">developer.ebay.com</a>.</div>
         <label for="ebayClientId">Client ID (App ID)</label>
         <input type="text" id="ebayClientId" placeholder="From developer.ebay.com" autocomplete="off" spellcheck="false">
         <div class="key-current" id="ebayClientIdCurrent"></div>
@@ -2079,17 +2079,6 @@ setAppTheme(readAppTheme());
         </div>
         <div class="hint" id="ebayStorageHint">Leave a box empty to keep what's saved.</div>
 
-        <h3 class="settings-subhead">Your eBay account (for feedback numbers)</h3>
-        <label for="ruName">RuName (from your eBay app)</label>
-        <input type="text" id="ruName" placeholder="e.g. YourName_YourApp-Redirect">
-        <div class="btn-row">
-          <button class="btn btn-ghost btn-sm" id="connectBtn" type="button">Connect eBay</button>
-          <input type="text" id="authCode" aria-label="The web address you land on after approving on eBay" autocomplete="off" placeholder="Paste the web address you land on" style="flex:2">
-          <button class="btn btn-ghost btn-sm" id="exchangeBtn" type="button">Finish connecting</button>
-          <button class="btn btn-ghost btn-sm" id="fetchStatsBtn" type="button">Get my feedback numbers</button>
-        </div>
-        <a id="ebayConsentLink" href="https://auth.ebay.com/" target="_blank" rel="noopener noreferrer" hidden>Open the eBay sign-in page</a>
-        <div class="hint">Connect eBay makes a sign-in link. Open it, approve on eBay, then paste the whole web address you land on and choose Finish connecting.</div>
         <p class="settings-status" id="ebayStatus" role="status"></p>
       </section>
 
@@ -2224,7 +2213,7 @@ const $ = id => document.getElementById(id);
 let conditionNoticeShown = false; // once per draft: see applyFormCondition
 let nextListingNudgeShown = false; // once per draft: see showNextListingNudge
 let descItemsTimer = 0; // debounced description -> bundle items, see syncDescriptionItems
-const state = { data: null, html: "", minedKeywords: [], minedSources: [], minedSourceQuery: "", ebayStar: "", edited: false, includedItems: [], bundleItems: [], condVaries: false, mode: "single", dataMode: "single", copied: false, template: null, styleSeed: Math.floor(Math.random() * 1e9), queryVersion: 0, reference: null, includedRemoved: [], brandOverride: "", descToItems: true, draftId: newDraftId(), contentApplied: false, removedItemNames: [] };
+const state = { data: null, html: "", minedKeywords: [], minedSources: [], minedSourceQuery: "", edited: false, includedItems: [], bundleItems: [], condVaries: false, mode: "single", dataMode: "single", copied: false, template: null, styleSeed: Math.floor(Math.random() * 1e9), queryVersion: 0, reference: null, includedRemoved: [], brandOverride: "", descToItems: true, draftId: newDraftId(), contentApplied: false, removedItemNames: [] };
 let draftVersion = 0;
 // The guided first run (see "The guided first run" near the end): this browser's record of it,
 // and the Start here marker's moment back after "Start by describing the item.".
@@ -2823,7 +2812,7 @@ const ARCH_CSS = {
 const KEYMAP = {
   storeName: "eb.store", ebUsername: "eb.username",
   logoUrl: "eb.logo", fbScore: "eb.fbScore", fbPct: "eb.fbPct",
-  memberYear: "eb.memberYear", ruName: "eb.ruName", returnsPolicy: "eb.returnsPolicy"
+  memberYear: "eb.memberYear", returnsPolicy: "eb.returnsPolicy"
 };
 for (const id of Object.keys(KEYMAP)) {
   const el = $(id);
@@ -2837,6 +2826,8 @@ for (const id of Object.keys(KEYMAP)) {
 }
 // eBay credentials moved server-side (.env); purge stale plaintext browser copies.
 try { localStorage.removeItem("eb.clientId"); localStorage.removeItem("eb.clientSecret"); } catch { /* Storage can be disabled by browser policy. */ }
+// Marteloio no longer signs in to eBay accounts (0.3.0): forget the RuName an older version kept.
+try { localStorage.removeItem("eb.ruName"); } catch { /* Storage can be disabled by browser policy. */ }
 // Restored before the draft, so re-rendering a restored listing uses the layout
 // the seller chose rather than the markup default.
 $("styleChoice").value = readPreference("eb.style") || "auto";
@@ -4119,7 +4110,7 @@ $("settingsTabs").addEventListener("keydown", event => {
 });
 // Typed or pasted secrets never outlive the dialog, and old results don't greet the next visit.
 function resetSettingsForm() {
-  for (const id of ["ebayClientId", "ebayClientSecret", "authCode"]) $(id).value = "";
+  for (const id of ["ebayClientId", "ebayClientSecret"]) $(id).value = "";
   maskSecretInputs();
   keyPaste.clear();
   // Every line starts folded, with Groq and OpenRouter under Other AI services.
@@ -5609,122 +5600,6 @@ for (const id of ["brand", "condition", "condNotes"]) {
 for (const id of ["condition", "condNotes"]) $(id).addEventListener("input", applyFormCondition);
 $("condition").addEventListener("change", applyFormCondition);
 
-/* ---------------- eBay connect / stats ---------------- */
-let oauthState = "";
-async function connectEbay() {
-  const btn = $("connectBtn");
-  if (btn.disabled || $("exchangeBtn").disabled) return;
-  const epoch = settingsEpoch;
-  const ru = $("ruName").value.trim();
-  if (!ru) { setEbayStatus("err", "Enter your RuName first."); $("ruName").focus(); return; }
-  btn.disabled = true;
-  oauthState = "";
-  $("ebayConsentLink").hidden = true;
-  try {
-    const d = await settingsJSON("/ebay/authorize-url?redirect_uri=" + encodeURIComponent(ru), {}, 12000);
-    if (epoch !== settingsEpoch || ru !== $("ruName").value.trim()) return;
-    const url = new URL(d.url);
-    if (url.origin !== 'https://auth.ebay.com' || url.pathname !== '/oauth2/authorize' || url.username || url.password || url.hash ||
-        typeof d.state !== 'string' || !d.state || url.searchParams.get('state') !== d.state) {
-      throw stepError("", "Marteloio made a sign-in link it can't use. Choose Connect eBay again.");
-    }
-    oauthState = d.state;
-    $("ebayConsentLink").href = url.href;
-    $("ebayConsentLink").hidden = false;
-    setEbayStatus("ok", "Sign-in link ready. Choose Open the eBay sign-in page, approve, then paste the web address you land on.");
-  } catch (e) {
-    if (epoch === settingsEpoch) setEbayStatus("err", describeFailure(e).text);
-  } finally {
-    btn.disabled = false;
-  }
-}
-$("connectBtn").addEventListener("click", connectEbay);
-$("ruName").addEventListener("input", () => {
-  oauthState = "";
-  $("ebayConsentLink").hidden = true;
-});
-
-async function exchangeEbay() {
-  const btn = $("exchangeBtn");
-  if (btn.disabled || $("connectBtn").disabled) return;
-  const epoch = settingsEpoch;
-  const raw = $("authCode").value.trim();
-  const ru = $("ruName").value.trim();
-  const submittedState = oauthState;
-  let code = raw, authState = oauthState;
-  if (raw.includes("code=")) {
-    // A pasted redirect URL is authoritative: its state is the one eBay echoed.
-    try {
-      const u = new URL(raw);
-      code = u.searchParams.get("code") || "";
-      authState = u.searchParams.get("state") || "";
-    } catch {
-      setEbayStatus("err", "Paste the whole web address you land on after approving on eBay.");
-      return;
-    }
-  }
-  if (!code) { setEbayStatus("err", "Paste the web address you land on after approving on eBay first."); return; }
-  if (!authState) {
-    setEbayStatus("err", "Choose Connect eBay again, then paste the whole web address you land on.");
-    return;
-  }
-  btn.disabled = true;
-  setEbayStatus("busy", "Connecting your eBay account\u2026");
-  try {
-    const result = await settingsJSON("/ebay/token-user", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code, state: authState, redirect_uri: ru })
-    });
-    if (result.connected !== true) throw stepError("ebay_connect_failed");
-    if (epoch !== settingsEpoch || ru !== $("ruName").value.trim()) return;
-    if ($("authCode").value.trim() === raw) $("authCode").value = "";
-    if (oauthState === submittedState) {
-      oauthState = "";
-      $("ebayConsentLink").hidden = true;
-    }
-    setEbayStatus("ok", "Your eBay account is connected. Getting your feedback numbers\u2026");
-    fetchStats();
-  } catch (e) {
-    if (epoch === settingsEpoch) setEbayStatus("err", describeFailure(e).text);
-  } finally {
-    btn.disabled = false;
-  }
-}
-$("exchangeBtn").addEventListener("click", exchangeEbay);
-
-async function fetchStats() {
-  const btn = $("fetchStatsBtn");
-  if (btn.disabled) return;
-  const epoch = settingsEpoch;
-  const ids = ["fbScore", "fbPct", "memberYear", "ebUsername"];
-  const before = Object.fromEntries(ids.map(id => [id, $(id).value]));
-  btn.disabled = true;
-  try {
-    const d = await settingsJSON("/ebay/userstats");
-    if (epoch !== settingsEpoch) return;
-    const values = {
-      fbScore: /^-?\d+$/.test(String(d.feedback_score)) ? String(d.feedback_score) : null,
-      fbPct: /^(?:\d+(?:\.\d+)?)$/.test(String(d.positive_pct)) && Number(d.positive_pct) <= 100 ? String(d.positive_pct) : null,
-      memberYear: typeof d.registration_date === 'string' && /^\d{4}-/.test(d.registration_date) ? d.registration_date.slice(0, 4) : null,
-      ebUsername: typeof d.username === 'string' && !before.ebUsername.trim() ? d.username : null
-    };
-    for (const id of ids) {
-      if (values[id] !== null && $(id).value === before[id]) $(id).value = values[id];
-      savePreference(KEYMAP[id], $(id).value);
-    }
-    syncSellerFieldHints();
-    if ($("fbScore").value === values.fbScore) state.ebayStar = typeof d.feedback_star === 'string' ? d.feedback_star : "";
-    renderPreview();
-    setEbayStatus("ok", "Your feedback numbers are filled in (Settings \u203a Your shop). Anything you changed meanwhile was kept.");
-  } catch (e) {
-    if (epoch === settingsEpoch) setEbayStatus("err", describeFailure(e).text);
-  } finally {
-    btn.disabled = false;
-  }
-}
-$("fetchStatsBtn").addEventListener("click", fetchStats);
-
 /* ---------------- trust header data ---------------- */
 function getTrust() {
   // A year or percentage that cannot be right is left out (the field says why).
@@ -5733,8 +5608,7 @@ function getTrust() {
     logo: $("logoUrl").value.trim(),
     feedback_score: $("fbScore").value.trim(),
     positive_pct: ListingCore.positivePercent($("fbPct").value),
-    member_since: ListingCore.memberSinceText($("memberYear").value, new Date().getFullYear()),
-    feedback_star: state.ebayStar
+    member_since: ListingCore.memberSinceText($("memberYear").value, new Date().getFullYear())
   };
   if (!/^https:\/\/i\.ebayimg\.com\//i.test(t.logo)) t.logo = "";
   return t;
@@ -5948,7 +5822,7 @@ function buildListingHTML(d, store, titleOverride, trust, returnsPolicy, mode = 
 
   const trustBits = [];
   if (trust.username) trustBits.push(esc(trust.username));
-  if (trust.feedback_score) trustBits.push("&#9733; " + esc(trust.feedback_score) + " feedback" + (trust.feedback_star ? " (" + esc(trust.feedback_star) + ")" : ""));
+  if (trust.feedback_score) trustBits.push("&#9733; " + esc(trust.feedback_score) + " feedback");
   if (trust.positive_pct) trustBits.push(esc(trust.positive_pct) + "% positive");
   if (trust.member_since) trustBits.push(esc(trust.member_since));
   const trustLine = trustBits.length ?

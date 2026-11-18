@@ -22,7 +22,6 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import xml.etree.ElementTree as ET
 from base64 import b64decode, b64encode
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -47,9 +46,6 @@ MAX_BODY = 128 * 1024
 MAX_UPSTREAM_BODY = 4 * 1024 * 1024
 REJECT_DRAIN_TIMEOUT = 0.25
 APP_ID = hashlib.sha256(os.path.normcase(BASE_DIR).encode()).hexdigest()[:16]
-_OAUTH_STATES = {}
-_OAUTH_LOCK = threading.Lock()
-_USER_TOKEN_LOCK = threading.RLock()
 _ENV_LOCK = threading.RLock()
 _COMPLETION_SLOTS = threading.BoundedSemaphore(3)
 _SETTINGS_LOCK = threading.Lock()
@@ -183,7 +179,6 @@ def provider_failure(reason, retry_after=None):
                           "if it keeps happening, shorten your notes.", "kind": "provider_request"}
 
 OAUTH_TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token"
-TRADING_URL = "https://api.ebay.com/ws/api.dll"
 BROWSE_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
 
 
@@ -274,7 +269,8 @@ def dpapi_decrypt(blob_bytes):
 
 # ---------------- encrypted secret store ----------------
 # One DPAPI blob (base64 text) wrapping JSON:
-#   {"v":1, "ebay_client_id":..., "ebay_client_secret":..., "token":{...}}
+#   {"v":1, "ebay_client_id":..., "ebay_client_secret":..., provider keys...}
+# A "token" entry is an eBay account sign-in from 0.2.0 or earlier; forget_saved_sign_in removes it.
 
 _STORE_LOCK = threading.Lock()
 
@@ -366,6 +362,7 @@ def _store_update(change):
         data, unreadable = _store_read_raw(path), None
     except StoreUnreadable as error:
         data, unreadable = {}, (path, error)
+    data.pop("token", None)  # an eBay account sign-in from 0.2.0 or earlier is never kept
     change(data)
     if not _store_write(data, unreadable):
         raise OSError("Could not verify the encrypted store")
@@ -430,53 +427,6 @@ def set_ebay_creds(cid=None, csec=None):
     return True
 
 
-def read_token():
-    if dpapi_available():
-        tok = load_secrets().get("token")
-        return tok if isinstance(tok, dict) and tok else None
-    if not os.path.exists(TOKEN_PATH):
-        return None
-    try:
-        with open(TOKEN_PATH, "r", encoding="utf-8") as f:
-            tok = json.load(f)
-            return tok if isinstance(tok, dict) and tok else None
-    except (ValueError, OSError):
-        return None
-
-
-def write_token(tok):
-    if dpapi_available():
-        with _STORE_LOCK:
-            try:
-                data = _store_read_raw()
-            except Exception as e:
-                raise OSError("Cannot read existing credential store") from e
-            data["token"] = tok
-            if not _store_write(data):
-                raise OSError("Could not persist encrypted token")
-        return
-    atomic_write(TOKEN_PATH, json.dumps(tok, indent=2))
-
-
-def update_token(patch):
-    if dpapi_available():
-        with _STORE_LOCK:
-            try:
-                data = _store_read_raw()
-            except Exception as e:
-                raise OSError("Cannot read existing credential store") from e
-            merged = dict(data.get("token") or {})
-            merged.update(patch)
-            data["token"] = merged
-            if not _store_write(data):
-                raise OSError("Could not persist encrypted token")
-            return merged
-    tok = read_token() or {}
-    tok.update(patch)
-    write_token(tok)
-    return tok
-
-
 def client_id():
     return get_ebay_cred("ebay_client_id")
 
@@ -514,20 +464,9 @@ def http_get(url, timeout=15, headers=None):
     return outbound_request(req, timeout)
 
 
-def strip_ns(tag):
-    return tag.split("}")[-1]
-
-
-def iter_named(root, name):
-    return [el for el in root.iter() if strip_ns(el.tag) == name]
-
-
-def find_text(root, name):
-    els = iter_named(root, name)
-    return els[0].text.strip() if els and els[0].text else ""
-
-
-# ---------------- OAuth token exchange ----------------
+# ---------------- eBay application token ----------------
+# Marteloio only asks eBay for an application token (client credentials). It never signs
+# in to an eBay account, so there is no user token to keep.
 
 def exchange_grant(body):
     cid, csec = client_id(), client_secret()
@@ -554,8 +493,6 @@ def exchange_grant(body):
     if "access_token" in data:
         if not isinstance(data['access_token'], str) or not data['access_token'].strip():
             raise UpstreamError("Invalid eBay access token")
-        if 'refresh_token' in data and (not isinstance(data['refresh_token'], str) or not data['refresh_token'].strip()):
-            raise UpstreamError("Invalid eBay refresh token")
         expires = data.get('expires_in')
         if isinstance(expires, bool) or not isinstance(expires, (int, str)):
             raise UpstreamError("Invalid eBay token lifetime")
@@ -567,74 +504,6 @@ def exchange_grant(body):
             raise UpstreamError("Invalid eBay token lifetime")
         data["expires_at"] = time.time() + expires
     return status, data
-
-
-def user_token_fresh():
-    # Serialize refreshes with new authorizations so a late refresh cannot
-    # overwrite a newly connected account. Re-read after acquiring the lock.
-    with _USER_TOKEN_LOCK:
-        return _user_token_fresh_locked()
-
-
-def _user_token_fresh_locked():
-    tok = read_token()
-    if not tok or not isinstance(tok.get('access_token'), str) or not tok['access_token'].strip():
-        return None
-    expires = tok.get('expires_at', 0)
-    if isinstance(expires, bool) or not isinstance(expires, (int, float)):
-        return None
-    try:
-        if not math.isfinite(expires):
-            return None
-    except OverflowError:
-        return None
-    if expires - 60 > time.time():
-        return tok
-    if isinstance(tok.get("refresh_token"), str) and tok['refresh_token'].strip():
-        try:
-            _, data = exchange_grant({
-                "grant_type": "refresh_token",
-                "refresh_token": tok["refresh_token"],
-            })
-            if "access_token" in data:
-                return update_token(data)
-        except Exception:
-            pass
-    return tok if expires > time.time() else None
-
-
-# ---------------- eBay API calls ----------------
-
-def trading_get_user(token):
-    body = (
-        '<?xml version="1.0" encoding="utf-8"?>'
-        '<GetUserRequest xmlns="urn:ebay:apis:eBLBaseComponents">'
-        "<IncludeFeedbackScore>true</IncludeFeedbackScore>"
-        "</GetUserRequest>"
-    )
-    _, text = http_post(TRADING_URL, body.encode("utf-8"), {
-        "Content-Type": "text/xml",
-        "X-EBAY-API-CALL-NAME": "GetUser",
-        "X-EBAY-API-SITEID": "0",
-        "X-EBAY-API-IAF-TOKEN": token,
-        "X-EBAY-API-COMPATIBILITY-LEVEL": "967",
-    }, timeout=20)
-    root = ET.fromstring(text)
-    if find_text(root, "Ack") == "Failure":
-        msg = find_text(root, "ShortMessage") or find_text(root, "ErrorMessage") or "GetUser failed"
-        return {"error": msg}
-    reg = find_text(root, "RegistrationDate")
-    years = ""
-    if reg[:4].isdigit():
-        years = str(max(0, time.gmtime().tm_year - int(reg[:4])))
-    return {
-        "username": find_text(root, "UserID"),
-        "feedback_score": find_text(root, "FeedbackScore"),
-        "feedback_star": find_text(root, "FeedbackRatingStar"),
-        "positive_pct": find_text(root, "PositiveFeedbackPercent"),
-        "registration_date": reg,
-        "years_member": years,
-    }
 
 
 APP_TOKEN = {"value": None, "expires_at": 0}
@@ -705,11 +574,9 @@ def browse_search(keywords, limit, gtin=""):
     for it in raw_items[:50]:
         if not isinstance(it, dict) or not isinstance(it.get('title'), str) or not it['title'].strip():
             continue
-        seller = it.get('seller') if isinstance(it.get('seller'), dict) else {}
+        # Only the listing's title, link and number are kept. Nothing about its seller is.
         items.append({'title': it['title'].strip()[:300],
-                      'url': it.get('itemWebUrl') if isinstance(it.get('itemWebUrl'), str) else '',
-                      'seller_feedback': str(seller.get('feedbackScore', ''))[:30],
-                      'seller_pct': str(seller.get('feedbackPercentage', ''))[:30]})
+                      'url': it.get('itemWebUrl') if isinstance(it.get('itemWebUrl'), str) else ''})
         if isinstance(it.get('itemId'), str):
             items[-1]['item_id'] = it['itemId'][:120]
         if len(items) >= limit:
@@ -944,26 +811,63 @@ def _token_like(tok):
             and all(isinstance(tok[k], str) for k in fields if k in tok))
 
 
+def forget_saved_sign_in():
+    """Delete an eBay account sign-in saved by version 0.2.0 or earlier (idempotent).
+
+    Marteloio no longer signs in to eBay accounts, so a saved sign-in is of no use and
+    is removed from the encrypted store and from .ebay_token.json. App keys are kept."""
+    removed = False
+    if os.path.exists(TOKEN_PATH):
+        raw = ""
+        try:
+            with open(TOKEN_PATH, "r", encoding="utf-8") as f:
+                raw = f.read(MAX_BODY)
+            plain_token = json.loads(raw)
+        except (ValueError, OSError):
+            # A sign-in file cut off mid-write still holds its tokens, so it goes too.
+            plain_token = None
+            if '"refresh_token"' in raw or '"access_token"' in raw:
+                plain_token = {"access_token": "damaged"}
+        if _token_like(plain_token):
+            try:
+                os.remove(TOKEN_PATH)
+                removed = True
+            except FileNotFoundError:
+                pass
+            except OSError as e:
+                print("[secrets] could not remove the old eBay sign-in file .ebay_token.json: %s" % e)
+        else:
+            print("[secrets] .ebay_token.json is not a saved eBay sign-in, so it was left in place.")
+    if dpapi_available():
+        with _STORE_LOCK:
+            try:
+                store = _store_read_raw()
+            except Exception:
+                store = None
+                print("[secrets] Existing store unreadable; the old eBay sign-in, if any, was left as it is.")
+            if store and "token" in store:
+                del store["token"]
+                try:
+                    written = _store_write(store)
+                except Exception:
+                    written = False
+                if written:
+                    removed = True
+                else:
+                    print("[secrets] could not remove the old eBay sign-in from the store; will retry next start.")
+    if removed:
+        print("[secrets] removed the eBay account sign-in saved by an older version; Marteloio no longer uses one.")
+
+
 def migrate_secrets():
-    """Move plaintext eBay creds/token into the DPAPI store (idempotent)."""
+    """Move plaintext eBay app keys into the DPAPI store (idempotent)."""
     if not dpapi_available():
-        print("[secrets] DPAPI unavailable - keeping plaintext .env / .ebay_token.json fallback.")
+        print("[secrets] DPAPI unavailable - keeping the plaintext .env fallback.")
         return
     env = read_env()
     cid = env.get("EBAY_CLIENT_ID", "").strip()
     csec = env.get("EBAY_CLIENT_SECRET", "").strip()
-    plain_token = None
-    if os.path.exists(TOKEN_PATH):
-        try:
-            with open(TOKEN_PATH, "r", encoding="utf-8") as f:
-                plain_token = json.load(f)
-        except (ValueError, OSError):
-            plain_token = None
-        if not _token_like(plain_token):
-            # Copying anything else in would make the whole store unreadable.
-            print("[secrets] .ebay_token.json is not a saved eBay sign-in, so it was left in place.")
-            plain_token = None
-    if not cid and not csec and plain_token is None:
+    if not cid and not csec:
         return
     try:
         with _STORE_LOCK:
@@ -975,8 +879,7 @@ def migrate_secrets():
         store["ebay_client_id"] = cid
     if csec:
         store["ebay_client_secret"] = csec
-    if plain_token is not None:
-        store["token"] = plain_token
+    store.pop("token", None)
     if not save_secrets(store):
         print("[secrets] could not encrypt store - leaving plaintext in place, will retry next start.")
         return
@@ -986,14 +889,7 @@ def migrate_secrets():
         print("[secrets] store written but could not strip .env: %s" % e)
     os.environ.pop("EBAY_CLIENT_ID", None)
     os.environ.pop("EBAY_CLIENT_SECRET", None)
-    if plain_token is not None:
-        try:
-            os.remove(TOKEN_PATH)
-        except FileNotFoundError:
-            pass
-        except OSError as e:
-            print("[secrets] store written but could not remove .ebay_token.json: %s" % e)
-    print("[secrets] migrated eBay credentials/token into the DPAPI-encrypted store.")
+    print("[secrets] migrated eBay app keys into the DPAPI-encrypted store.")
 
 
 def mask_key(value):
@@ -1269,14 +1165,10 @@ class Handler(BaseHTTPRequestHandler):
             self.handle_ai_status()
         elif path == "/ai/freellmapi/detect":
             self.handle_freellmapi_detect()
-        elif path == "/ebay/userstats":
-            self.handle_userstats()
         elif path == "/ebay/reference":
             self.handle_reference(urllib.parse.parse_qs(parsed.query).get("item_id", [""])[0])
         elif path == "/ebay/search":
             self.handle_search(urllib.parse.parse_qs(parsed.query))
-        elif path == "/ebay/authorize-url":
-            self.handle_authorize_url(parsed.query)
         elif path == "/settings":
             self.handle_settings_get()
         else:
@@ -1308,39 +1200,6 @@ class Handler(BaseHTTPRequestHandler):
             threading.Thread(target=self.server.shutdown, daemon=True).start()
         elif path == "/llm/chat/completions":
             self.handle_completion()
-        elif path == "/ebay/token-user":
-            body = self.read_json()
-            code = safe_value(body.get("code", ""))
-            if not code:
-                self.fail(400, "invalid_request", "Paste the whole web address you land on after approving on eBay.")
-                return
-            redirect = safe_value(body.get("redirect_uri", "")) \
-                or os.environ.get("EBAY_REDIRECT_URI", "").strip()
-            if not redirect:
-                self.fail(400, "invalid_request", "Enter your RuName in Settings \u203a eBay first.")
-                return
-            state = safe_value(body.get("state", ""))
-            with _OAUTH_LOCK:
-                pending = _OAUTH_STATES.pop(state, None)
-            if not pending or pending[0] < time.monotonic() or pending[1] != redirect:
-                self.fail(400, "invalid_request", "Choose Connect eBay again, then paste the whole web address you land on.")
-                return
-            self.guard(lambda: exchange_grant({
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": redirect,
-            }), merge=False)
-        elif path == "/ebay/token-refresh":
-            self.read_json()
-            with _USER_TOKEN_LOCK:
-                tok = read_token()
-                if not tok or not isinstance(tok.get("refresh_token"), str) or not tok['refresh_token'].strip():
-                    self.fail(400, "ebay_not_connected", "Connect your eBay account in Settings \u203a eBay first.")
-                    return
-                self.guard(lambda: exchange_grant({
-                    "grant_type": "refresh_token",
-                    "refresh_token": tok["refresh_token"],
-                }))
         elif path == "/settings":
             self.handle_settings_post()
         elif path == "/settings/ebay":
@@ -1351,31 +1210,6 @@ class Handler(BaseHTTPRequestHandler):
             self.handle_ai_test()
         else:
             self.reject_json({"error": "not found", "kind": "not_found"}, 404)
-
-    def guard(self, fn, persist=True, merge=True):
-        try:
-            with _USER_TOKEN_LOCK:
-                status, data = fn()
-                if persist and "access_token" in data:
-                    if merge:
-                        update_token(data)
-                    else:
-                        write_token(data)
-            if "access_token" in data:
-                self.send_json({"connected": True})
-            elif status == 400 and not (client_id() and client_secret()):
-                self.fail(400, "ebay_not_configured", "Add your eBay Client ID and Client Secret in Settings \u203a eBay first.")
-            else:
-                self.fail(status if status >= 400 else 502, "ebay_connect_failed",
-                          "eBay didn't finish connecting your account. Choose Connect eBay and try again.")
-        except EbayAuthError as error:
-            # 401 is the keyset; 400 is usually an expired or reused sign-in code.
-            if error.code == 401:
-                self.fail(502, "ebay_auth", EBAY_MESSAGES["ebay_auth"])
-            else:
-                self.fail(502, "ebay_connect_failed", "eBay didn't finish connecting your account. Choose Connect eBay and try again.")
-        except Exception:
-            self.fail(502, "ebay_connect_failed", "Marteloio couldn't connect or save your eBay account. Try again in a minute.")
 
     def handle_health(self):
         storage_error = False
@@ -1626,28 +1460,6 @@ class Handler(BaseHTTPRequestHandler):
         except (urllib.error.URLError, OSError, http.client.HTTPException, RuntimeError):
             self.fail(502, "ebay_unavailable", EBAY_MESSAGES["ebay_unavailable"])
 
-    def handle_userstats(self):
-        try:
-            tok = user_token_fresh()
-        except OSError:
-            self.fail(503, "ebay_storage", EBAY_MESSAGES["ebay_storage"])
-            return
-        if not tok:
-            self.fail(200, "ebay_not_connected",
-                      "Connect your eBay account in Settings \u203a eBay to fill in your seller numbers.", fallback=True)
-            return
-        try:
-            stats = trading_get_user(tok["access_token"])
-        except Exception:
-            self.fail(502, "ebay_unavailable", "Marteloio couldn't load your eBay seller statistics. Try again in a minute.")
-            return
-        if "error" in stats:
-            # eBay's own text is not shown: it can name internal details.
-            self.fail(502, "ebay_not_connected",
-                      "eBay didn't accept the saved connection. Choose Connect eBay in Settings \u203a eBay, then try again.")
-            return
-        self.send_json(stats)
-
     def handle_search(self, qs):
         keywords = (qs.get("keywords", [""])[0]).strip()
         raw_limit = qs.get("limit", ["20"])[0] or "20"
@@ -1740,36 +1552,6 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"saved": sorted(updates),
                         "message": "eBay credentials saved to .env - DPAPI unavailable, "
                                    "saved in plaintext."})
-
-    def handle_authorize_url(self, query):
-        redirect = (urllib.parse.parse_qs(query).get("redirect_uri") or [""])[0].strip() \
-            or os.environ.get("EBAY_REDIRECT_URI", "").strip()
-        try:
-            cid = client_id()
-        except OSError:
-            self.fail(503, "ebay_storage", EBAY_MESSAGES["ebay_storage"])
-            return
-        if not cid:
-            self.fail(400, "ebay_not_configured", "Add your eBay Client ID in Settings \u203a eBay first.")
-            return
-        if not redirect:
-            self.fail(400, "invalid_request", "Enter your RuName in Settings \u203a eBay first.")
-            return
-        url = ("https://auth.ebay.com/oauth2/authorize"
-               + "?client_id=" + urllib.parse.quote(cid)
-               + "&redirect_uri=" + urllib.parse.quote(redirect)
-               + "&response_type=code"
-               + "&scope=" + urllib.parse.quote("https://api.ebay.com/oauth/api_scope"))
-        state = secrets.token_urlsafe(32)
-        with _OAUTH_LOCK:
-            for old, pending in list(_OAUTH_STATES.items()):
-                if pending[0] < time.monotonic():
-                    del _OAUTH_STATES[old]
-            if len(_OAUTH_STATES) >= 16:
-                _OAUTH_STATES.pop(next(iter(_OAUTH_STATES)))
-            _OAUTH_STATES[state] = (time.monotonic() + 600, redirect)
-        url += "&state=" + urllib.parse.quote(state)
-        self.send_json({"url": url, "state": state})
 
     def handle_settings_post(self):
         body = self.read_json()
@@ -1892,6 +1674,7 @@ def main():
     load_env()
     PORT = int(os.environ.get("PORT", "8080"))
     srv = bind_server(PORT)
+    forget_saved_sign_in()
     migrate_secrets()
     report_unreadable_store()
     try:

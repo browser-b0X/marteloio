@@ -2,6 +2,36 @@
 
 What changed in each version of Marteloio, newest first. Your version is in Settings › About.
 
+## 0.3.0 — not yet released
+
+eBay is now used for one thing only: looking up other sellers' listings. Marteloio no longer
+signs in to your eBay account.
+
+### Removed
+
+- **Connect eBay and Get my feedback numbers.** Settings › eBay no longer has the RuName box,
+  Connect eBay, Finish connecting or Get my feedback numbers. eBay now limits how apps may
+  read user data such as usernames, and Marteloio doesn't need your account to write a
+  listing. Type your feedback score, positive % and member-since year in Settings › Your
+  shop; what you already entered there is kept.
+- The feedback star colour beside the feedback score in the seller header. It only came from
+  the eBay account connection.
+
+### Changed
+
+- **Look up** and **Find keywords** work as before with your eBay Client ID and Client Secret.
+- Search results keep only each listing's title, link and listing number. The seller's
+  feedback numbers that eBay sends along are no longer copied.
+- Settings › eBay says that Marteloio never signs in to your eBay account.
+
+### Security
+
+- The first time this version starts, it deletes any eBay account sign-in saved by an older
+  version: from the encrypted store on Windows, or from `.ebay_token.json` elsewhere. Your
+  Client ID, Client Secret and AI keys are kept. The RuName saved in the browser is removed too.
+- You can also remove Marteloio's access on eBay's side: in your eBay account settings, open
+  the list of apps with access and remove your developer application.
+
 ## 0.2.0 — 2026-10-13
 
 This version is about getting started without help: a Windows installer, a guided first run,
