@@ -2,7 +2,7 @@
 
 What changed in each version of Marteloio, newest first. Your version is in Settings › About.
 
-## 0.3.0 — not yet released
+## 0.3.0 — 2026-11-18
 
 eBay is now used for one thing only: looking up other sellers' listings. Marteloio no longer
 signs in to your eBay account.
