@@ -38,7 +38,6 @@
       return reply(settingsReply);
     }
     if ((path === "/settings" || path === "/settings/ebay") && opts.method === "POST") return new Promise(resolve => pending.push({path, opts, resolve}));
-    if (path.startsWith('/ebay/authorize-url?') || path === '/ebay/token-user' || path === '/ebay/userstats') return new Promise(resolve => pending.push({path, opts, resolve}));
     if (path === "/llm/chat/completions" || path.startsWith("/ebay/search?") || path.startsWith("/ebay/reference?")) {
       return new Promise(resolve => pending.push({path, opts, resolve}));
     }
@@ -84,6 +83,7 @@
   if (!barcodeReloadStage && !themeReloadStage) {
     localStorage.clear();
     localStorage.setItem("eb.appTheme", "dark");
+    localStorage.setItem("eb.ruName", "Fixture_RuName-from-0.2.0");
     localStorage.setItem("eb.draft.v1", JSON.stringify({version: 1, inputs: {notes: "Restored fixture draft"}}));
     localStorage.setItem("marteloio.guide.v1", JSON.stringify(GUIDE_DONE));
   }
@@ -758,9 +758,11 @@
           ebayInline = $("ebayStatus").textContent === "Enter a Client ID or Client Secret first." && $("ebayStatus").classList.contains("is-err") && !live().length;
           closeSettings();
         });
-        lc(() => $("settingsPane-ebay").querySelector(".settings-lead").textContent === "Optional. Only needed for Look up, Find keywords and your feedback numbers." &&
-          ["ebayClientId", "ebayClientSecret", "saveEbayCredsBtn", "ruName", "connectBtn", "authCode", "exchangeBtn", "fetchStatsBtn"].every(id => $("settingsPane-ebay").contains($(id))) && ebayInline,
-          "eBay (optional) says what it's for, keeps the keys and Connect eBay, and reports inside the dialog");
+        lc(() => $("settingsPane-ebay").querySelector(".settings-lead").textContent === "Optional. Only needed for Look up and Find keywords, which search other sellers' listings. Marteloio never signs in to your eBay account." &&
+          ["ebayClientId", "ebayClientSecret", "saveEbayCredsBtn"].every(id => $("settingsPane-ebay").contains($(id))) &&
+          ["ruName", "connectBtn", "authCode", "exchangeBtn", "fetchStatsBtn", "ebayConsentLink"].every(id => !$(id)) &&
+          !/RuName|Connect eBay|feedback numbers/.test($("settingsOverlay").textContent) && ebayInline,
+          "eBay (optional) says what it's for, keeps only the app keys (no account sign-in), and reports inside the dialog");
         let about = "";
         await act(async () => {
           fixtureAppInfo = {...savedInfo, build: "a1b2c3d4e5f6", data_dir: "C:\\Users\\Fixture\\AppData\\Local\\Marteloio"};
@@ -2994,41 +2996,10 @@
       check(expiredRequest.opts.signal.aborted, "Settings deadlines abort the underlying request");
       expiredRequest.resolve(reply({}));
       check((await expiredRead).message.includes('too long'), "A response arriving after the Settings deadline is rejected");
-      $("ruName").value = 'fixture-redirect';
-      const connecting = connectEbay(); const consentRequest = await nextRequest();
-      await connectEbay();
-      check(!pending.length, "Repeated Connect clicks cannot request overlapping consent states");
-      consentRequest.resolve(reply({url:'https://auth.ebay.com/oauth2/authorize?state=fixture-state',state:'fixture-state'})); await connecting;
-      check(!$("ebayConsentLink").hidden && $("ebayConsentLink").rel.includes('noopener') && oauthState === 'fixture-state', "Connect exposes a safe explicit consent link without relying on popups");
-      $("authCode").value = 'https://example.test/callback?code=fixture-code';
-      await exchangeEbay();
-      check(!pending.length && !$("exchangeBtn").disabled, "A pasted redirect without state cannot borrow the current consent state");
-      $("authCode").value = 'https://example.test/callback?code=fixture-code&state=fixture-state';
-      const exchanging = exchangeEbay(); const tokenRequest = await nextRequest(); await exchangeEbay();
-      check(JSON.parse(tokenRequest.opts.body).state === 'fixture-state' && !pending.length, "Exchange sends the redirect state once and blocks duplicate submissions");
-      $("authCode").value = 'newer-code-fixture';
-      tokenRequest.resolve(reply({connected:true})); await exchanging;
-      const autoStats = await nextRequest(); autoStats.resolve(reply({})); await tick();
-      check($("authCode").value === 'newer-code-fixture' && !$("exchangeBtn").disabled, "A completed exchange preserves a newer pasted code");
-      const unsafeConnect = connectEbay(); const unsafeRequest = await nextRequest();
-      unsafeRequest.resolve(reply({url:'https://unrelated.example/?state=bad',state:'bad'})); await unsafeConnect;
-      check($("ebayConsentLink").hidden && !oauthState && !$("connectBtn").disabled, "Unrelated consent URLs cannot become active links");
-      $("fbScore").value = '99'; $("fbPct").value = '99.8';
-      const zeroStats = fetchStats(); const zeroRequest = await nextRequest();
-      zeroRequest.resolve(reply({feedback_score:0,positive_pct:0})); await zeroStats;
-      check($("fbScore").value === '0' && $("fbPct").value === '0', "Valid zero eBay statistics replace older values");
-      const lateStats = fetchStats(); const lateStatsRequest = await nextRequest();
-      $("fbScore").value = '25';
-      lateStatsRequest.resolve(reply({feedback_score:999,positive_pct:100})); await lateStats;
-      check($("fbScore").value === '25' && $("fbPct").value === '100' && !$("fetchStatsBtn").disabled, "Delayed statistics preserve newer seller edits while updating untouched fields");
-      const disconnectedStats = fetchStats(); const disconnectedRequest = await nextRequest();
-      disconnectedRequest.resolve(reply({error:"Connect your eBay account in Settings \u203a eBay to fill in your seller numbers.", kind:"ebay_not_connected", fallback:true}));
-      await disconnectedStats;
-      check($("fbScore").value === '25' && $("fbPct").value === '100' && !$("fetchStatsBtn").disabled &&
-        $("ebayStatus").classList.contains("is-err") && $("ebayStatus").textContent.includes('Connect your eBay account'),
-        "Disconnected stats preserve seller values and report failure instead of success");
       closeSettings();
-      check(!$("authCode").value, "Closing Settings clears the transient authorization code");
+      check(typeof connectEbay === "undefined" && typeof exchangeEbay === "undefined" && typeof fetchStats === "undefined" &&
+        !("ebayStar" in state) && !("feedback_star" in getTrust()) && localStorage.getItem("eb.ruName") === null,
+        "0.3.0: no eBay account sign-in or seller statistics code is left, and the saved RuName is forgotten");
 
       appToken = ''; holdSession = true;
       const sessionController = new AbortController();

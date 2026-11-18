@@ -327,6 +327,7 @@ class Bug14MalformedTokenMigration(unittest.TestCase):
                 out = io.StringIO()
                 with fake_dpapi(), contextlib.redirect_stdout(out), contextlib.redirect_stderr(out), \
                         patch.dict(os.environ):
+                    server.forget_saved_sign_in()
                     server.migrate_secrets()
                     store = server.load_secrets()
                 self.assertEqual(store.get("ebay_client_id"), "Seller-App-PRD-fixture")

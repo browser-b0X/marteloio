@@ -27,12 +27,13 @@ class ProviderEnvironmentTests(unittest.TestCase):
 
 @unittest.skipUnless(server.dpapi_available(), 'DPAPI is only available on Windows')
 class EncryptedProviderTests(IsolatedCredentialPaths):
-    def test_replacing_connection_removes_old_refresh_but_preserves_other_secrets(self):
+    def test_forgetting_an_old_sign_in_preserves_other_secrets(self):
         self.assertTrue(server.save_secrets({'provider_keys': {'GROQ_API_KEY': 'provider-fixture'}, 'ebay_client_id': 'client-fixture',
                                             'token': {'access_token': 'old-fixture', 'refresh_token': 'old-refresh-fixture'}}))
-        server.write_token({'access_token': 'new-fixture'})
+        with contextlib.redirect_stdout(io.StringIO()):
+            server.forget_saved_sign_in()
         store = server.load_secrets()
-        self.assertEqual(store['token'], {'access_token': 'new-fixture'})
+        self.assertNotIn('token', store)
         self.assertEqual(store['provider_keys'], {'GROQ_API_KEY': 'provider-fixture'})
         self.assertEqual(store['ebay_client_id'], 'client-fixture')
 
@@ -64,7 +65,7 @@ class EncryptedProviderTests(IsolatedCredentialPaths):
         store = server.load_secrets()
         self.assertTrue(store['provider_keys']['GROQ_API_KEY'] == 'new-private-fixture')
         self.assertTrue(store['ebay_client_id'] == 'ebay-fixture')
-        self.assertTrue(store['token']['refresh_token'] == 'token-fixture')
+        self.assertNotIn('token', store)  # an old eBay sign-in goes with any save (0.3.0)
         self.assertNotIn('GROQ_API_KEY', server.read_env())
         self.assertTrue(server.read_env()['GEMINI_API_KEY'] == 'keep-fixture')
         self.assertNotIn('new-private-fixture', Path(self.secrets_path).read_text())

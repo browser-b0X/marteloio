@@ -12,16 +12,6 @@ import server
 
 
 class ProviderFailureTests(unittest.TestCase):
-    def test_seller_stats_failure_does_not_expose_upstream_exception(self):
-        handler = server.Handler.__new__(server.Handler)
-        handler.send_json = Mock()
-        with patch.object(server, 'user_token_fresh', return_value={'access_token': 'fixture'}), patch.object(server, 'trading_get_user', side_effect=RuntimeError('PRIVATE-UPSTREAM-FIXTURE')):
-            handler.handle_userstats()
-        error, status = handler.send_json.call_args.args
-        self.assertEqual(status, 502)
-        self.assertNotIn('PRIVATE', str(error))
-        self.assertIn('statistics', error['error'])
-
     def completion(self, keys=None, chat=None, body=None):
         handler = server.Handler.__new__(server.Handler)
         handler.read_json = lambda: body or {"model": "listing-text", "messages": [{"role": "user", "content": "Fixture"}]}
