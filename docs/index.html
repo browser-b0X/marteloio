@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#111318" media="(prefers-color-scheme: dark)">
   <meta name="theme-color" content="#F7F7F5" media="(prefers-color-scheme: light)">
-  <meta name="description" content="Marteloio turns the notes you jot about an item into an eBay title and description you can paste straight in. Free and open source, with a one-click Windows installer and a guided setup for free AI keys. It runs on your own PC.">
-  <meta property="og:title" content="Marteloio — Details, drafted.">
+  <meta name="description" content="Marteloio is a free, open-source eBay listing generator. Type your notes and get an eBay title, item specifics and an HTML description to paste in. It runs on your own PC, with free AI keys.">
+  <meta property="og:title" content="Marteloio: free, open-source AI eBay listing generator">
   <meta property="og:description" content="Your notes in. A finished eBay listing out. Free, open-source listing software that runs on your own PC.">
   <meta property="og:type" content="website">
   <meta property="og:image" content="https://browser-b0x.github.io/marteloio/assets/social-preview.png">
@@ -15,7 +15,8 @@
   <meta property="og:image:alt" content="Marteloio: Your notes in. A finished listing out.">
   <meta property="og:url" content="https://browser-b0x.github.io/marteloio/">
   <meta name="twitter:card" content="summary_large_image">
-  <title>Marteloio — Details, drafted.</title>
+  <title>Marteloio: free, open-source AI eBay listing generator</title>
+  <link rel="canonical" href="https://browser-b0x.github.io/marteloio/">
   <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
   <link rel="preload" href="assets/fonts/space-grotesk-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="assets/fonts/manrope-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
@@ -374,7 +375,7 @@
     <div class="wrap">
       <div class="hero-grid">
         <div>
-          <span class="eyebrow"><b>Free</b> Open-source eBay listing software</span>
+          <span class="eyebrow"><b>Free</b> Open-source eBay listing generator</span>
           <h1 id="hero-title">Your notes in.<br>A finished listing <em>out.</em></h1>
           <p class="lead">Marteloio turns the notes you jot about an item into an eBay title and description you can paste straight in. It runs on your own PC, works with free AI keys, and leaves every fact for you to check.</p>
           <div class="cta">
@@ -679,6 +680,7 @@
         <h2 id="faq-title">Good to know.</h2>
       </div>
       <div class="faq">
+        <details class="reveal"><summary>What does Marteloio generate?</summary><p>An eBay listing from your own notes: a title of up to 80 characters, item specifics, highlights and a description in eBay-ready HTML. It is a listing generator and a description generator in one, and a saved template starts the next similar item with no AI request.</p></details>
         <details class="reveal"><summary>Is it really free?</summary><p>Yes. Marteloio is MIT-licensed open source with no paid tier. The AI comes from your own keys: Google Gemini, Groq and OpenRouter each offer a free tier with limits they set, and FreeLLMAPI spreads requests over many free services. Templates and single-section regeneration help you stay inside them.</p></details>
         <details class="reveal"><summary>Why does Windows warn me about the installer?</summary><p>Marteloio-Setup.exe isn't code-signed yet, so Windows SmartScreen doesn't know who made it and shows "Windows protected your PC". Choose More info, then Run anyway. Signing through the SignPath Foundation, which signs open-source projects for free, is in progress; see the <a href="https://github.com/browser-b0X/marteloio/blob/main/CODE_SIGNING_POLICY.md">code signing policy</a>. Until then you can <a href="https://github.com/browser-b0X/marteloio/blob/main/SECURITY.md#checking-the-installer">check the file's SHA-256</a> against the one on the release page.</p></details>
         <details class="reveal"><summary>How do I update or uninstall it?</summary><p>To update, download the newer Marteloio-Setup.exe and run it. It closes Marteloio, replaces the program and keeps your keys, settings and drafts. To uninstall, open Windows Settings › Apps, choose Marteloio, then Uninstall. It asks whether to remove your saved keys and settings too; the default keeps them.</p></details>
@@ -726,6 +728,7 @@
       <a href="https://github.com/browser-b0X/marteloio/blob/main/CODE_SIGNING_POLICY.md">Code signing policy</a>
       <a href="https://github.com/browser-b0X/marteloio/blob/main/CODE_OF_CONDUCT.md">Code of conduct</a>
       <a href="https://github.com/browser-b0X/marteloio/issues">Issues</a>
+      <a href="https://browser-b0x.github.io/">More apps by browser-b0X</a>
     </nav>
   </div>
 </footer>
