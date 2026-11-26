@@ -1,6 +1,6 @@
 # Marteloio — public source manifest
 
-Exact curated file set for the public repository: **103 files**. Only these files may
+Exact curated file set for the public repository: **104 files**. Only these files may
 enter the public branch. Listing a file here is not by itself permission to commit,
 push or publish.
 
@@ -23,6 +23,7 @@ use synthetic data and never contact AI services or eBay.
 
 - `.env.example`
 - `.gitattributes`
+- `.github/FUNDING.yml`
 - `.github/ISSUE_TEMPLATE/bug_report.yml`
 - `.github/ISSUE_TEMPLATE/config.yml`
 - `.github/ISSUE_TEMPLATE/feature_request.yml`
