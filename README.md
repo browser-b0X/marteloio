@@ -7,9 +7,10 @@
 
 https://github.com/user-attachments/assets/82a54639-f48c-495b-b00c-38b58c5dc29d
 
-**Details, drafted.** Marteloio turns the notes you jot about an item into an eBay
-title and description you can paste straight in. It runs on your own computer,
-works with free AI keys, and leaves every fact for you to check.
+**Details, drafted.** Marteloio is a free, open-source eBay listing generator: it turns the
+notes you jot about an item into an eBay title, item specifics and an HTML description you
+can paste straight in. It runs on your own computer, works with free AI keys, and leaves
+every fact for you to check.
 
 <p align="center">
   <a href="https://github.com/browser-b0X/marteloio/releases/latest/download/Marteloio-Setup.exe"><img src="https://img.shields.io/badge/Download_for_Windows-C2410C?style=for-the-badge" alt="Download Marteloio for Windows (Marteloio-Setup.exe)" height="40"></a>
@@ -323,6 +324,19 @@ Help make **browser-b0X** better.
 
 > Every contribution is appreciated, but never expected.<br>
 > Using the project, reporting bugs, and sharing it with others helps too.
+
+## More from browser-b0X
+
+Free, open-source apps that run on your own computer:
+
+- [SuperBookmarks](https://browser-b0x.github.io/super-bookmark-manager/) is a local bookmark manager for
+  Windows: one library for browser bookmarks, Telegram and WhatsApp links and saved posts, with offline copies.
+- [Startclip](https://browser-b0x.github.io/startclip/) is one offline HTML page that maps the apps on your
+  machine and copies the right start command.
+
+[All apps](https://browser-b0x.github.io/) ·
+[X](https://x.com/browserb0x) ·
+[YouTube](https://www.youtube.com/@browser-b0x)
 
 ## License
 
