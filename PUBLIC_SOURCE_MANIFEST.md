@@ -1,6 +1,6 @@
 # Marteloio — public source manifest
 
-Exact curated file set for the public repository: **101 files**. Only these files may
+Exact curated file set for the public repository: **99 files**. Only these files may
 enter the public branch. Listing a file here is not by itself permission to commit,
 push or publish.
 
@@ -79,8 +79,6 @@ use synthetic data and never contact AI services or eBay.
 - `docs/screenshots/listing-dark.webp`
 - `docs/screenshots/listing-light.webp`
 - `docs/screenshots/listing-phone.webp`
-- `docs/screenshots/lookup-dark.webp`
-- `docs/screenshots/lookup-light.webp`
 - `docs/screenshots/templates-dark.webp`
 - `docs/screenshots/templates-light.webp`
 - `docs/screenshots/welcome-dark.webp`
