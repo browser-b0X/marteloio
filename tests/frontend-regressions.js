@@ -120,6 +120,70 @@
       applyDraft({inputs: {}, mode: "bundle", bundleItems: names.map(name => ({name, notes: "Original " + name}))});
       renderDraft();
     }
+    /* ---- 0.4.0: listing HTML that survives eBay's editor. Every style sits on its own element: no style block,
+       no CSS variables, no media query, no drawn-on decoration. eBay's Standard editor, quick form and app are
+       reported to drop style blocks and class names; with these checks, dropping them changes nothing.
+       Runs at the end of the suite, or alone with ?inline (add &soft to record failures instead of stopping). ---- */
+    async function inlineChecks() {
+      const soft = new URLSearchParams(location.search).has("soft");
+      const softFailures = [];
+      const lc = (fn, label) => { let ok = false; try { ok = Boolean(fn()); } catch (_) { ok = false; } if (ok || !soft) check(ok, label); else softFailures.push(label); };
+      const item = ListingCore.normalizeListing({title: "Canon AE-1 Program 35mm SLR Film Camera with FD 50mm f/1.8 Lens",
+        condition_rating: "USED", condition_notes: "Light brassing on the corners.", note: "The light seals were not replaced.",
+        description_paragraphs: ["The shutter fires at every speed and the meter responds.", "The lens glass is clean."],
+        included_items: ["Camera body", "FD 50mm f/1.8 lens"], not_included: ["Battery"], buyer_notes: ["Check the photos."],
+        item_specifics: {Brand: "Canon", Model: "AE-1 Program", Format: "35mm"},
+        highlights: [{stat: "35mm", label: "FORMAT", caption: "Full-frame film"}, {stat: "f/1.8", label: "LENS", caption: "FD 50mm"}],
+        bundle_items: [{name: "Camera body", condition: "Used", description: "Works.", brand: "Canon"}, {name: "Flash", condition: "For parts or not working", description: "Does not charge.", brand: ""}]});
+      const frames = [];
+      const render = html => { const f = document.createElement("iframe"); f.style.cssText = "position:fixed;left:-9999px;top:0;width:1000px;height:900px;border:0";
+        document.body.append(f); frames.push(f); const d = f.contentDocument; d.open(); d.write('<!doctype html><body style="margin:0">' + html + "</body>"); d.close(); return f; };
+      const PROPS = ["display", "color", "backgroundColor", "fontSize", "fontWeight", "fontFamily", "lineHeight", "letterSpacing", "textTransform", "textAlign", "paddingTop", "paddingRight",
+        "paddingBottom", "paddingLeft", "marginTop", "marginBottom", "borderTopWidth", "borderLeftWidth", "borderLeftColor", "borderBottomWidth", "borderTopLeftRadius", "opacity", "listStyleType"];
+      const picture = f => [...f.contentDocument.body.querySelectorAll("*")].map(el => { const c = f.contentWindow.getComputedStyle(el), r = el.getBoundingClientRect();
+        return el.tagName + "|" + Math.round(r.left) + "," + Math.round(r.top) + "," + Math.round(r.width) + "," + Math.round(r.height) + "|" + PROPS.map(k => c[k]).join("|"); });
+      const stripClasses = html => html.replace(/\sclass="[^"]*"/g, "");
+      const savedChoice = $("styleChoice").value, savedSeed = state.styleSeed, savedVaries = state.condVaries;
+      const build = (arch, theme, mode) => { $("styleChoice").value = arch; state.styleSeed = theme * 4; state.condVaries = mode === "bundle";
+        return buildListingHTML(item, "Northbank Finds", item.title, {}, $("returnsPolicy").value, mode); };
+      for (const arch of ["classic", "story", "spec", "minimal"]) {
+        for (const mode of ["single", "bundle"]) {
+          const tag = arch + " " + mode, html = build(arch, arch === "spec" ? 3 : 0, mode);
+          lc(() => !/<style|<\/style|var\(|@media|::before|::after|@import/i.test(html), tag + ": the copied HTML has no style block, CSS variable, media query or pseudo-element");
+          lc(() => !/position\s*:|background-image|gradient\(|expression\(|url\(/i.test(html), tag + ": no positioning, background images or gradients (eBay is reported to strip them)");
+          const doc = new DOMParser().parseFromString("<body>" + html + "</body>", "text/html"), root = doc.body.firstElementChild;
+          lc(() => doc.body.children.length === 1 && /max-width\s*:\s*920px/.test(root.getAttribute("style")) && /font-family/.test(root.getAttribute("style")) &&
+            [...root.querySelectorAll("h1, h2, h3, p, table, th, td, li, ul")].every(el => (el.getAttribute("style") || "").length > 0),
+            tag + ": one wrapper, and every heading, paragraph, list and table cell carries its own style");
+          lc(() => { const items = [...root.querySelectorAll("ul li")]; return items.length >= 3 && items.every(li => { const m = li.firstElementChild;
+            return m && m.tagName === "SPAN" && m.getAttribute("aria-hidden") === "true" && m.textContent === "✓" && li.textContent.length > 1; }); },
+            tag + ": each list item starts with a real ✓ marker, hidden from screen readers");
+          lc(() => { const bars = [...root.querySelectorAll("h2")].map(h => h.firstElementChild && h.firstElementChild.getAttribute("aria-hidden") === "true" && !h.firstElementChild.textContent);
+            return bars.length >= 4 && (arch === "minimal" ? bars.every(bar => !bar) : bars.every(Boolean)); },
+            tag + (arch === "minimal" ? ": section headings have no accent bar" : ": each section heading starts with its accent bar as a real element"));
+          const styled = render(html), bare = render(stripClasses(html));
+          await tick(); await tick();
+          const a = picture(styled), b = picture(bare);
+          lc(() => a.length > 30 && a.length === b.length && a.every((line, i) => line === b[i]), tag + ": with every class name removed, every element keeps its size, place, colours and type");
+          lc(() => { const w = styled.contentWindow, d = styled.contentDocument, head = d.querySelector("h1"), band = d.body.firstElementChild.firstElementChild;
+            return w.getComputedStyle(head).fontSize === (arch === "story" ? "30px" : "28px") && w.getComputedStyle(head).fontWeight === "800" &&
+              w.getComputedStyle(band).backgroundColor !== "rgba(0, 0, 0, 0)" && w.getComputedStyle(d.querySelector("table")).borderCollapse === "separate"; },
+            tag + ": the look is there: title size and weight, a coloured store band, the specifics table");
+          lc(() => html.length < 40000 && !/\sstyle=""/.test(html), tag + ": the HTML stays small (under 40,000 characters; eBay allows 500,000) with no empty style attributes");
+        }
+      }
+      // What the seller copies is this same HTML.
+      $("styleChoice").value = "classic"; state.styleSeed = 0; state.condVaries = false;
+      applyDraft({version: 1, mode: "single", inputs: {notes: "Inline styles fixture"}, includedItems: [], bundleItems: [], data: item}); renderDraft();
+      await tick(); await tick();
+      lc(() => state.html.length > 2000 && !/<style|var\(|@media/.test(state.html) && $("htmlOut").value === state.html && $("preview").srcdoc.includes(state.html),
+        "The HTML box, the preview and Copy HTML all hold the same inline-styled listing");
+      lc(() => /^<div[^>]*>/.test(state.html) && !/<!doctype|<html|<head|<body|<meta|<link/i.test(state.html), "The listing is one fragment: no doctype, html, head, body, meta or link");
+      frames.forEach(f => f.remove());
+      $("styleChoice").value = savedChoice; state.styleSeed = savedSeed; state.condVaries = savedVaries;
+      newListing();
+      if (soft) { const note = document.createElement("pre"); note.id = "inline-soft"; note.textContent = softFailures.length + " check(s) failed in soft mode:\n" + softFailures.join("\n"); panel.append(note); }
+    }
     /* ---- 0.4.0: no eBay keys. Search eBay is a plain link to eBay's own search; Look up, Find keywords and
        Settings › eBay are gone. Runs at the end of the suite, or alone with ?v040. ---- */
     async function v040Checks() {
@@ -2409,6 +2473,12 @@
         panel.dataset.result = "pass";
         return;
       }
+      if (new URLSearchParams(location.search).has("inline")) {
+        await inlineChecks();
+        title.textContent = passed + " inline-style checks passed";
+        panel.dataset.result = "pass";
+        return;
+      }
       if (new URLSearchParams(location.search).has("v040")) {
         await v040Checks();
         title.textContent = passed + " 0.4.0 checks passed";
@@ -3160,7 +3230,7 @@
         const unknownDoc = new DOMParser().parseFromString(buildListingHTML({...state.data, condition_rating:""}, "", "Tint", {}, "listing"), "text/html");
         const knownDoc = new DOMParser().parseFromString(buildListingHTML({...state.data, condition_rating:"USED"}, "", "Tint", {}, "listing"), "text/html");
         check(unknownDoc.querySelector(".elb-cond").classList.contains("elb-cond-unknown") && !knownDoc.querySelector(".elb-cond").classList.contains("elb-cond-unknown") &&
-          unknownDoc.querySelector("style").textContent.includes(".elb-cond.elb-cond-unknown{background:#efefec"),
+          /background:\s*#efefec/.test(unknownDoc.querySelector(".elb-cond").getAttribute("style")) && !/#efefec/.test(knownDoc.querySelector(".elb-cond").getAttribute("style")),
           style + " uses a neutral condition panel only when the condition is not specified");
       }
       $("styleChoice").value = "auto";
@@ -3238,17 +3308,17 @@
               (html.match(/https:\/\/[^"'\s)<]*/g) || []).every(url => url === "https://schema.org/"),
               tag + " contains no strings eBay rejects or flags and no external resources");
             if (style !== "simple") {
-              const css = doc.querySelector("style").textContent, theme = STYLE_THEMES[Math.floor(9 / STYLE_ARCHES.length) % STYLE_THEMES.length];
-              v2(() => v2Count(css, /--brand:/g) === 1 && css.includes("--brand:" + theme.brand) && css.includes("--paper:" + theme.paper) &&
-                !/\.elb-theme-\d/.test(css) && STYLE_ARCHES.every(a => a.id === arch || !css.includes(".elb-arch-" + a.id)) &&
-                !/(^|[;{\s])order\s*:/.test(css) && (mode === "bundle") === css.includes(".elb-bundle-item{"),
-                tag + " emits only the active theme's and layout's CSS");
+              const theme = STYLE_THEMES[Math.floor(9 / STYLE_ARCHES.length) % STYLE_THEMES.length], rootStyle = doc.querySelector(".ebay-listing").getAttribute("style");
+              v2(() => !/<style|var\(|--brand|--paper/.test(html) && rootStyle.includes("font-family:" + theme.body) && html.includes(theme.paper) &&
+                html.includes(arch === "minimal" ? "color:" + theme.accent : "background:" + theme.brand) && (mode === "bundle") === Boolean(doc.querySelector(".elb-bundle-item[style]")),
+                tag + " carries only the active theme's colours and fonts, written out on the elements");
               v2(() => JSON.stringify(v2Sections(doc)) === JSON.stringify(v2Order[arch].filter(key => key !== "bundle" || mode === "bundle")) &&
-                doc.querySelector(".ebay-listing").firstElementChild.tagName === "STYLE" &&
+                doc.querySelector(".ebay-listing").firstElementChild.tagName !== "STYLE" &&
                 doc.querySelector(".elb-titleblock").contains(summaryBox),
                 tag + " builds sections in the " + arch + " order in the DOM");
-              v2(() => /\.elb-h2::before\{[^}]*background:var\(--accent\)/.test(css) && !/::before\{[^}]*#FF5A1F/i.test(css),
-                tag + " heading accent bar follows the theme accent");
+              v2(() => { const bar = doc.querySelector(".elb-h2 > span[aria-hidden]");
+                return arch === "minimal" ? !bar : bar.getAttribute("style").includes("background:" + theme.accent) && !/#FF5A1F/i.test(bar.getAttribute("style")); },
+                tag + (arch === "minimal" ? " has no heading accent bar" : " heading accent bar follows the theme accent"));
             }
           }
         }
@@ -3299,10 +3369,11 @@
                     .map(el => el.getBoundingClientRect().top);
                   v2(() => tops.every((top, i) => i === 0 || top > tops[i - 1]),
                     tag + " visual section order matches DOM order");
-                  const probe = doc.createElement("i"); probe.style.color = "var(--accent)";
+                  const probe = doc.createElement("i"); probe.style.color = STYLE_THEMES[theme].accent;
                   doc.querySelector(".ebay-listing").append(probe);
-                  v2(() => win.getComputedStyle(doc.querySelector(".elb-h2"), "::before").backgroundColor === win.getComputedStyle(probe).color,
-                    tag + " heading accent bar matches the theme accent");
+                  v2(() => { const bar = doc.querySelector(".elb-h2 > span[aria-hidden]");
+                    return style === "minimal" ? !bar : win.getComputedStyle(bar).backgroundColor === win.getComputedStyle(probe).color && bar.getBoundingClientRect().width === 6; },
+                    tag + (style === "minimal" ? " has no heading accent bar" : " heading accent bar is drawn in the theme accent, 6px wide"));
                   probe.remove();
                   const th = doc.querySelector(".elb-specs th"), td = doc.querySelector(".elb-specs td");
                   v2(() => [th, td].every(cell => { const cs = win.getComputedStyle(cell); let el = cell, bg = "rgba(0, 0, 0, 0)";
@@ -3312,11 +3383,11 @@
                 }
               }
               if (style !== "simple") {
-                const [doc] = await v2Load(html.replace(/<style>[\s\S]*?<\/style>/, ""), 375);
+                const [doc] = await v2Load(html.replace(/\s(?:style|class)="[^"]*"/g, ""), 375);
                 v2(() => [...doc.querySelectorAll("table tr")].map(tr => tr.textContent).join("|") === "BrandAurora|ModelC1|TypeMirrorless|ColorBlack|MountA-mount" &&
                   v2Frame.contentWindow.getComputedStyle(doc.querySelector("table tr")).display === "table-row" &&
                   doc.querySelector("th").getBoundingClientRect().right <= doc.querySelector("td").getBoundingClientRect().left,
-                  tag + " item specifics still read as label/value rows with the style block removed");
+                  tag + " item specifics still read as label/value rows with every style and class removed");
               }
             }
           }
@@ -3536,9 +3607,11 @@
           check(["strong", "p"].every(sel => contrast(win.getComputedStyle(condPanel.querySelector(sel)).color, cs.backgroundColor) >= 4.5) &&
             cs.borderLeftWidth === "4px", style + "/" + (code || "unknown") + " condition panel text is readable on its tint");
           if (code === "") {
-            check(parseFloat(win.getComputedStyle(doc.querySelector("h1")).fontSize) <= 21 &&
-              (style !== "story" || parseFloat(win.getComputedStyle(doc.querySelector(".elb-titleblock")).paddingLeft) <= 14),
-              style + " uses the mobile title size and padding at 390px");
+            // 0.4.0: styles sit on the elements, and a style attribute can't hold a phone-width rule. The listing keeps
+            // its one set of sizes and must still fit a phone without scrolling sideways.
+            check(parseFloat(win.getComputedStyle(doc.querySelector("h1")).fontSize) === (style === "story" ? 30 : 28) &&
+              doc.documentElement.scrollWidth <= exportFrame.clientWidth && doc.querySelector("h1").getBoundingClientRect().right <= exportFrame.clientWidth,
+              style + " keeps one title size at every width and fits a 390px screen without sideways scrolling");
           }
         }
         check(panels.NEW === "rgb(232, 248, 239)" && panels.EUC === panels.NEW && panels.GUC === panels.USED &&
@@ -4932,6 +5005,7 @@
       await wave3Checks();
       await qaChecks();
       await v040Checks();
+      await inlineChecks();
 
       title.textContent = passed + " browser regression checks passed";
       panel.dataset.result = "pass";
