@@ -37,8 +37,8 @@
       if (holdSettings) { holdSettings = false; return new Promise(resolve => pending.push({path, opts, resolve})); }
       return reply(settingsReply);
     }
-    if ((path === "/settings" || path === "/settings/ebay") && opts.method === "POST") return new Promise(resolve => pending.push({path, opts, resolve}));
-    if (path === "/llm/chat/completions" || path.startsWith("/ebay/search?") || path.startsWith("/ebay/reference?")) {
+    if (path === "/settings" && opts.method === "POST") return new Promise(resolve => pending.push({path, opts, resolve}));
+    if (path === "/llm/chat/completions") {
       return new Promise(resolve => pending.push({path, opts, resolve}));
     }
     throw new Error("Fixture blocked unexpected request: " + path);
@@ -86,6 +86,7 @@
     localStorage.setItem("eb.ruName", "Fixture_RuName-from-0.2.0");
     localStorage.setItem("eb.draft.v1", JSON.stringify({version: 1, inputs: {notes: "Restored fixture draft"}}));
     localStorage.setItem("marteloio.guide.v1", JSON.stringify(GUIDE_DONE));
+    localStorage.setItem("eb.lookupRemovedNote", "1");  // the one-time "Look up was removed" note has its own checks (v040Checks)
   }
   const blockedStorageBoot = new URLSearchParams(location.search).has("storage-blocked");
   if (blockedStorageBoot) {
@@ -118,6 +119,88 @@
     function setupBundle(names) {
       applyDraft({inputs: {}, mode: "bundle", bundleItems: names.map(name => ({name, notes: "Original " + name}))});
       renderDraft();
+    }
+    /* ---- 0.4.0: no eBay keys. Search eBay is a plain link to eBay's own search; Look up, Find keywords and
+       Settings › eBay are gone. Runs at the end of the suite, or alone with ?v040. ---- */
+    async function v040Checks() {
+      // With ?soft it records failures instead of stopping, so it can be run against 0.3.0 (each check must fail there).
+      const soft = new URLSearchParams(location.search).has("soft");
+      const softFailures = [];
+      const lc = (fn, label) => { let ok = false; try { ok = Boolean(fn()); } catch (_) { ok = false; } if (ok || !soft) check(ok, label); else softFailures.push(label); };
+      const settleUi = async () => { for (let i = 0; i < 8; i++) await tick(); };
+      const typeInto = (el, value) => { el.value = value; el.dispatchEvent(new Event("input", {bubbles: true})); };
+      const SEARCH = "https://www.ebay.com/sch/i.html?_nkw=";
+      newListing();
+      await settleUi();
+      const link = () => $("searchEbayLink");
+      lc(() => link() && link().tagName === "A" && link().target === "_blank" && /\bnoopener\b/.test(link().rel) && /\bnoreferrer\b/.test(link().rel) &&
+        link().textContent.trim().startsWith("Search eBay"), "Search eBay is a link that opens in a new tab, without passing the page along");
+      lc(() => !link().hasAttribute("href") && link().getAttribute("aria-disabled") === "true" &&
+        $("searchHint").textContent.includes("Type a product name first"), "With no product name, Search eBay is off and the hint says to type a name first");
+      typeInto($("productSearch"), "  Canon AE-1 Program & 50mm f/1.8  ");
+      await settleUi();
+      lc(() => link().getAttribute("href") === SEARCH + "Canon%20AE-1%20Program%20%26%2050mm%20f%2F1.8" && !link().hasAttribute("aria-disabled") &&
+        $("searchHint").textContent.includes("how other sellers list this item"), "Search eBay searches eBay.com for the typed product name, trimmed and encoded");
+      typeInto($("productBarcode"), "0013803012345");
+      await settleUi();
+      lc(() => link().getAttribute("href") === SEARCH + "0013803012345" && $("searchHint").textContent.includes("0013803012345"),
+        "With a barcode set, Search eBay searches the barcode and the hint names it");
+      typeInto($("productBarcode"), "12ab");
+      await settleUi();
+      lc(() => link().getAttribute("href") === SEARCH + "Canon%20AE-1%20Program%20%26%2050mm%20f%2F1.8", "A barcode that isn't valid is not searched: Search eBay goes back to the product name");
+      typeInto($("productBarcode"), ""); typeInto($("productSearch"), "");
+      await settleUi();
+      lc(() => !link().hasAttribute("href") && link().getAttribute("aria-disabled") === "true", "Clearing the product name turns Search eBay off again");
+      let requests = 0;
+      for (let i = 0; i < 4 && pending.length; i++) { requests++; pending.shift(); }
+      lc(() => requests === 0, "Search eBay asks the Marteloio server for nothing");
+
+      /* -- Gone: Look up, Find keywords, references, keyword chips, Settings › eBay -- */
+      lc(() => ["lookupBtn", "mineBtn", "lookupHint", "lookupNote", "referenceCandidates", "refPanel", "refAcceptBtn", "refDismissBtn", "minedPanel", "minedChips",
+        "settingsTab-ebay", "settingsPane-ebay", "ebayClientId", "ebayClientSecret", "saveEbayCredsBtn"].every(id => !$(id)),
+        "0.4.0: none of the Look up, Find keywords, reference, keyword-chip or eBay-key controls is on the page");
+      lc(() => ["lookupProduct", "mineKeywords", "acceptReference", "fetchReferenceCandidates", "saveEbayCreds", "renderReference"].every(name => typeof window[name] === "undefined") &&
+        ["reference", "minedKeywords", "minedSources", "lookupCandidates", "queryVersion"].every(key => !(key in state)) &&
+        ["normalizeReference", "normalizeCandidates", "normalizeSourcedReference", "titleKeywords", "normalizeSearchSources"].every(name => !(name in ListingCore)),
+        "0.4.0: the code behind them is gone from the page and from ListingCore");
+      lc(() => { const code = [...document.scripts].map(script => script.textContent).join("\n"); return !/\/ebay\/|\/settings\/ebay|api\.ebay\.com|developer\.ebay\.com/.test(code + document.body.innerHTML); },
+        "0.4.0: the page names no eBay API address or developer site; the only eBay address is the search link's");
+
+      /* -- A draft from 0.3.0 with a reference and keyword chips: dropped, with one note, once -- */
+      const REMOVED = "Look up and Find keywords were removed in 0.4.0. Your notes and listing are unchanged.";
+      const removedNotes = () => [...document.querySelectorAll("#toastPanel .toast-item:not(.leaving) .toast.note p")].filter(p => p.textContent === REMOVED).length;
+      const oldDraft = () => ({version: 1, mode: "single", dataMode: "single", inputs: {notes: "Old draft notes", productSearch: "Canon AE-1", productBarcode: "012345678905"},
+        includedItems: ["Camera body"], bundleItems: [], minedKeywords: ["canon", "slr"], minedSources: [{title: "Old source", url: "https://www.ebay.com/itm/1"}], minedSourceQuery: "Canon AE-1",
+        reference: {q: "Canon AE-1", barcode: "012345678905", kind: "ebay-listing", at: "2026-10-01T10:00:00Z", accepted: true,
+          source: {item_id: "v1|1|0", title: "Old source", url: "https://www.ebay.com/itm/1"}, data: {product_name: "", key_specs: {Model: "Old reference spec"}}},
+        data: ListingCore.normalizeListing(listing("Old draft title")), html: ""});
+      localStorage.removeItem("eb.lookupRemovedNote");
+      applyDraft(oldDraft()); renderDraft();
+      await settleUi();
+      lc(() => $("notes").value === "Old draft notes" && $("productSearch").value === "Canon AE-1" && $("productBarcode").value === "012345678905" &&
+        state.data.title === "Old draft title" && state.includedItems.join() === "Camera body" && state.html.includes("Old draft title"),
+        "A 0.3.0 draft with a reference and keywords restores the seller's notes, name, barcode, included items and listing");
+      lc(() => { const saved = JSON.stringify(snapshotDraft()), message = buildUserMessage();
+        return !/Old reference spec|minedKeywords|minedSources|"reference"/.test(saved) && !/Old reference spec|KEYWORD SUGGESTIONS|REFERENCE/.test(message); },
+        "Its reference and keywords are not restored, not saved again and not sent to the AI");
+      lc(() => removedNotes() === 1 && localStorage.getItem("eb.lookupRemovedNote") === "1", "The seller is told once, in a note: " + REMOVED);
+      applyDraft(oldDraft()); renderDraft();
+      await settleUi();
+      lc(() => removedNotes() === 1, "Opening another such draft does not say it again");
+      applyDraft({version: 1, mode: "single", inputs: {notes: "Plain draft"}, includedItems: [], bundleItems: []}); renderDraft();
+      localStorage.removeItem("eb.lookupRemovedNote");
+      [...document.querySelectorAll("#toastPanel .toast-item .toast-x, #toastPanel .toast-item button[aria-label^='Dismiss']")].forEach(button => button.click());
+      await settleUi();
+      const before = removedNotes();
+      applyDraft({version: 1, mode: "single", inputs: {notes: "Plain draft"}, includedItems: [], bundleItems: []}); renderDraft();
+      await settleUi();
+      lc(() => removedNotes() === before, "A draft that never used Look up brings no note");
+      localStorage.setItem("eb.lookupRemovedNote", "1");
+      newListing();
+      if (soft) {
+        const note = document.createElement("pre"); note.id = "v040-soft";
+        note.textContent = softFailures.length + " check(s) failed in soft mode:\n" + softFailures.join("\n"); panel.append(note);
+      }
     }
     /* ---- v0.2.0 wave 2: messages that fade, plain errors with fixes, step notes, Settings ----
        Runs at the end of the suite, or alone with ?wave2. With ?soft it records failures instead
@@ -173,7 +256,6 @@
       const twoSetUp = {ready: true, retry_in: 0, providers: [provider("freellmapi", "FreeLLMAPI", {configured: true, state: "ready", key_hint: "9f3c", checked: "ok"}),
         provider("gemini", "Google Gemini", {configured: true, state: "ready", key_hint: "a1B2", checked: "ok"}), provider("groq", "Groq"), provider("openrouter", "OpenRouter")]};
       const NO_AI = "Connect an AI service first. It takes about 2 minutes with a free Google key.";
-      const NO_EBAY = "Look up needs an eBay key (optional). Add one in Settings \u203a eBay, or just describe the item.";
       const FAST = {busyDelay: 80, busyElapsed: 320, tick: 60, ok: 450, okAction: 700, note: 500, err: 600, errMax: 1000, readFrom: 120, perChar: 2, sayGap: 60};
       let defaultTimes = null;
       try { defaultTimes = {...TOAST_TIMES}; } catch (_) { /* older code */ }
@@ -461,38 +543,6 @@
         });
         lc(() => busyNote && clearedBySuccess, "Step notes: a note without a fix says what its message said, and stays until the next listing is written");
         lc(() => droppedOnNew && keptOnNew, "Step notes: New listing clears them all, a note about a missing setup too");
-        let lookupToasts = -1, lookupProblems = -1, lookupText = "", lookupAction = "", lookupNoLine = false, ebayOpened = false, authNote = "", noteGoneAfterKeys = false;
-        await act(async () => {
-          clearToasts(); newListing(); typeInto($("productSearch"), "Canon AE-1");
-          const run = lookupProduct(); const requests = [await nextRequest(), await nextRequest()];
-          for (const request of requests) request.resolve(reply({error: NO_EBAY, kind: "ebay_not_configured", fallback: true}));
-          await run; await settleUi();
-          lookupToasts = liveOf("note").length; lookupProblems = liveOf("err").length;
-          const item = liveOf("note").at(-1);
-          lookupText = textOf(item); lookupAction = (actionOf(item) || {}).textContent || "";
-          lookupNoLine = $("lookupNote").hidden;
-          actionOf(item).click(); await settleUi();
-          ebayOpened = $("settingsOverlay").classList.contains("open") && $("settingsTab-ebay").getAttribute("aria-selected") === "true" && document.activeElement === $("ebayClientId");
-          closeSettings();
-          // eBay turning saved keys down is a Problem, and its line goes once eBay keys are saved.
-          const AUTH = "eBay didn't accept your eBay keys. Check the Client ID and Client Secret in Settings \u203a eBay.";
-          const again = lookupProduct(); const more = [await nextRequest(), await nextRequest()];
-          for (const request of more) failWith(request, 502, {error: AUTH, kind: "ebay_auth", fallback: true});
-          await again; await settleUi();
-          authNote = $("lookupNote").hidden ? "" : $("lookupNote").querySelector(".step-note-text").textContent + "|" + $("lookupNote").querySelector(".step-note-fix").textContent;
-          await openSettings("ebay");
-          $("ebayClientId").value = "fixture-client-id";
-          const save = saveEbayCreds(); const saveRequest = await nextRequest();
-          saveRequest.resolve(reply({saved: ["EBAY_CLIENT_ID"], message: "Saved"})); await save;
-          noteGoneAfterKeys = $("lookupNote").hidden;
-          closeSettings();
-        });
-        lc(() => lookupToasts === 1 && lookupProblems === 0 && lookupText === NO_EBAY && lookupAction === "Open Settings",
-          "Look up without eBay keys is a Notice (it's optional), said once in plain words, with Open Settings");
-        lc(() => lookupNoLine, "Look up without eBay keys leaves no red line under Look up");
-        lc(() => ebayOpened, "Open Settings opens the eBay tab at its first box");
-        lc(() => authNote === "eBay didn't accept your eBay keys.|Open Settings" && noteGoneAfterKeys,
-          "Step notes: eBay turning the keys down keeps a line with Open Settings, which goes once eBay keys are saved");
         lc(() => {
           const code = [...document.scripts].map(script => script.textContent).join("\n");
           return !/Generation failed|Lookup failed|Keyword mining unavailable|provider keys|EBAY_CLIENT_ID|OAuth exchange failed|Reference retrieval failed|Save failed: |"HTTP " \+/.test(code);
@@ -507,7 +557,7 @@
         await act(async () => {
           await openSettings();
           const tabs = [...$("settingsTabs").querySelectorAll('[role="tab"]')];
-          tabsNamed = $("settingsTabs").getAttribute("role") === "tablist" && tabs.map(tab => tab.textContent).join("|") === "AI|Your shop|eBayoptional|About" &&
+          tabsNamed = $("settingsTabs").getAttribute("role") === "tablist" && tabs.map(tab => tab.textContent).join("|") === "AI|Your shop|About" &&
             tabs.every(tab => $(tab.getAttribute("aria-controls")).getAttribute("role") === "tabpanel");
           const press = key => document.activeElement.dispatchEvent(new KeyboardEvent("keydown", {key, bubbles: true, cancelable: true}));
           $("settingsTab-ai").focus(); press("ArrowRight");
@@ -521,7 +571,7 @@
           await openSettings("about"); tabOpened = settingsTab + ":" + !$("settingsPane-about").hidden; closeSettings();
           await openSettings("shop"); tabOpened += "," + settingsTab; closeSettings();
         });
-        lc(() => tabsNamed, "Settings has the tabs AI · Your shop · eBay (optional) · About");
+        lc(() => tabsNamed, "Settings has the tabs AI · Your shop · About");
         lc(() => arrows, "Settings tabs move with the arrow keys, Home and End");
         lc(() => tabOpened === "about:true,shop", "openSettings(tab) opens the tab asked for");
 
@@ -746,23 +796,14 @@
           "FreeLLMAPI running but not set up: a card says how to copy its key, and Use FreeLLMAPI goes to the paste box");
         lc(() => emptyCard.startsWith("FreeLLMAPI is running on this computer, but it has no AI services yet."), "The card says plainly when FreeLLMAPI has no AI services yet");
 
-        /* -- Your shop, eBay, About, Quit -- */
+        /* -- Your shop, About, Quit -- */
         lc(() => ["storeName", "ebUsername", "logoUrl", "fbScore", "fbPct", "memberYear", "fbPctError", "memberYearError"].every(id => $("settingsPane-shop").contains($(id))) &&
           !$("settingsPane-ai").contains($("storeName")), "Your shop holds the seller details, with their hints");
-        let ebayInline = false;
-        await act(async () => {
-          clearToasts();
-          await openSettings("ebay");
-          $("ebayClientId").value = ""; $("ebayClientSecret").value = "";
-          await saveEbayCreds();
-          ebayInline = $("ebayStatus").textContent === "Enter a Client ID or Client Secret first." && $("ebayStatus").classList.contains("is-err") && !live().length;
-          closeSettings();
-        });
-        lc(() => $("settingsPane-ebay").querySelector(".settings-lead").textContent === "Optional. Only needed for Look up and Find keywords, which search other sellers' listings. Marteloio never signs in to your eBay account." &&
-          ["ebayClientId", "ebayClientSecret", "saveEbayCredsBtn"].every(id => $("settingsPane-ebay").contains($(id))) &&
-          ["ruName", "connectBtn", "authCode", "exchangeBtn", "fetchStatsBtn", "ebayConsentLink"].every(id => !$(id)) &&
-          !/RuName|Connect eBay|feedback numbers/.test($("settingsOverlay").textContent) && ebayInline,
-          "eBay (optional) says what it's for, keeps only the app keys (no account sign-in), and reports inside the dialog");
+        lc(() => [...document.querySelectorAll("#settingsTabs .settings-tab")].map(tab => tab.dataset.tab).join() === "ai,shop,about" &&
+          !$("settingsTab-ebay") && !$("settingsPane-ebay") &&
+          ["ebayClientId", "ebayClientSecret", "saveEbayCredsBtn", "ruName", "connectBtn", "authCode", "exchangeBtn", "fetchStatsBtn", "ebayConsentLink"].every(id => !$(id)) &&
+          !/RuName|Connect eBay|feedback numbers|Client ID|Client Secret|developer\.ebay/.test($("settingsOverlay").textContent),
+          "0.4.0: Settings has AI, Your shop and About: no eBay tab, no eBay keys and no account sign-in");
         let about = "";
         await act(async () => {
           fixtureAppInfo = {...savedInfo, build: "a1b2c3d4e5f6", data_dir: "C:\\Users\\Fixture\\AppData\\Local\\Marteloio"};
@@ -1273,7 +1314,7 @@
           "Welcome: the footer says how keys are kept, as Settings does (encrypted on Windows, the .env file elsewhere)");
 
         /* -- Tour: six coach marks on the real screen -- */
-        const TARGETS = [() => [$("productSearch").closest(".lookup-section").querySelector(".field-head"), document.querySelector("#lookupSection .lookup-row"), $("lookupHint")],
+        const TARGETS = [() => [$("productSearch").closest(".lookup-section").querySelector(".field-head"), document.querySelector("#lookupSection .lookup-row"), $("searchHint")],
           () => [$("notes"), document.querySelector('label[for="notes"]')], () => [$("condition"), document.querySelector('label[for="condition"]')], () => [$("generateBtn")],
           () => [document.querySelector("#outputCard .title-box"), $("previewShell")], () => [$("copyHtmlBtn")]];
         let tourOpen = null;
@@ -1306,10 +1347,10 @@
           "Tour: it starts on the real screen with focus in its card, and Get set up steps aside so it can point at the real controls");
         lc(() => stops.length === 6 && stops.map(stop => stop.title).join("|") === "Start here|Describe the item|Condition|Generate listing|Review|Copy into eBay" &&
           stops.every((stop, i) => stop.text === ListingCore.TOUR_STOPS[i].text && stop.count === (i + 1) + " of 6" && stop.dots === "1".repeat(i + 1) + "0".repeat(5 - i)) &&
-          stops[0].text === "Type what you're selling, like “Canon AE-1 camera”. Look up and Find keywords next to it are optional.",
+          stops[0].text === "Type what you're selling, like “Canon AE-1 camera”. Search eBay next to it shows how other sellers list it.",
           "Tour: six stops with the approved words, progress dots and 1 of 6 to 6 of 6");
         lc(() => stops.length === 6 && stops.every(stop => stop.covered),
-          "Tour: each spotlight surrounds its target: the product name with Look up and Find keywords, Describe the item, Condition, Generate listing, the title and preview, Copy HTML");
+          "Tour: each spotlight surrounds its target: the product name with Search eBay, Describe the item, Condition, Generate listing, the title and preview, Copy HTML");
         lc(() => stops.length === 6 && stops.every(stop => stop.apart && stop.inView), "Tour: the card sits beside the spotlight, inside the window");
         lc(() => stops.length === 6 && !stops[0].back && stops.slice(1).every(stop => stop.back) && stops[5].next === "Done" && stops.slice(0, 5).every(stop => stop.next === "Next"),
           "Tour: Back from the second stop on, Next, and Done on the last");
@@ -1542,7 +1583,7 @@
         lc(() => comma, "What's included: a typed comma ends an item, as its tip says (but not inside brackets or in 1,000)");
 
         /* -- Button tips: on hover after about 0.4 s and on keyboard focus, also when disabled -- */
-        const BUTTONS = [["lookupBtn", "lookup"], ["mineBtn", "keywords"], ["modeBundle", "bundle"], ["formNewListingBtn", "newListing"], ["generateBtn", "generate"],
+        const BUTTONS = [["modeBundle", "bundle"], ["formNewListingBtn", "newListing"], ["generateBtn", "generate"],
           ["copyHtmlBtn", "copyHtml"], ["regenBtn", "regenerate"], ["editContentBtn", "editContent"], ["shuffleStyleBtn", "shuffle"], ["draftsBtn", "drafts"], ["aiStatus", "aiStatus"]];
         let delay = null;
         const buttonTips = [];
@@ -1569,7 +1610,7 @@
         });
         lc(() => delay.early && delay.late && delay.gone, "Button tips: hovering shows the tip after about 0.4 s, and leaving hides it");
         lc(() => buttonTips.length === BUTTONS.length && buttonTips.every(tip => tip.shown && tip.inView),
-          "Button tips: Look up, Find keywords, Bundle / lot, New listing, Generate listing, Copy HTML, Regenerate…, Edit content, Shuffle look, Drafts and AI status show their approved words");
+          "Button tips: Bundle / lot, New listing, Generate listing, Copy HTML, Regenerate…, Edit content, Shuffle look, Drafts and AI status show their approved words");
         lc(() => buttonTips.length === BUTTONS.length && buttonTips.every(tip => tip.described), "Button tips: screen readers hear the same words with each button");
         lc(() => buttonTips.some(tip => tip.id === "regenBtn" && tip.disabled && tip.shown) && buttonTips.some(tip => tip.id === "copyHtmlBtn" && tip.disabled && tip.shown),
           "Button tips: a disabled button (Regenerate… or Copy HTML before the first listing) still shows its tip");
@@ -1577,16 +1618,16 @@
         await act(async () => {
           const tip = $("btnTip");
           press("Tab", {}, document.body);
-          $("lookupBtn").focus();
-          focusTip = {keyboard: !tip.hidden && words(tip.querySelector("b")) === "Look up"};
-          press("Escape", {}, $("lookupBtn"));
+          $("modeBundle").focus();
+          focusTip = {keyboard: !tip.hidden && words(tip.querySelector("b")) === tips().bundle.title};
+          press("Escape", {}, $("modeBundle"));
           focusTip.esc = tip.hidden;
-          $("mineBtn").focus();
-          focusTip.next = !tip.hidden && words(tip.querySelector("b")) === "Find keywords";
+          $("formNewListingBtn").focus();
+          focusTip.next = !tip.hidden && words(tip.querySelector("b")) === tips().newListing.title;
           $("notes").focus();
           focusTip.blur = tip.hidden;
-          $("lookupBtn").dispatchEvent(new PointerEvent("pointerdown", {bubbles: true, pointerType: "mouse"}));
-          $("lookupBtn").focus();
+          $("modeBundle").dispatchEvent(new PointerEvent("pointerdown", {bubbles: true, pointerType: "mouse"}));
+          $("modeBundle").focus();
           focusTip.click = tip.hidden;
           $("notes").focus();
         });
@@ -1712,11 +1753,8 @@
           help.links && help.notOffered, "Help: Show the setup again, Take the tour, Show the Get set up guide (when hidden or done), User guide and Report a problem");
         lc(() => help.keys && help.arrowOpen, "Help: arrow keys, Home and End move through it, and Esc closes it back to its button");
         lc(() => help.setup && help.tour, "Help: Show the setup again opens the welcome; Take the tour starts the tour");
-        lc(() => {
-          const hint = $("lookupHint"), tag = hint.querySelector(".opt-tag");
-          return shown(tag) && words(tag) === "Optional" && words(hint).startsWith("Optional Look up and Find keywords") &&
-            tips().lookup.text.startsWith("Optional.") && tips().keywords.text.startsWith("Optional.");
-        }, "Look up and Find keywords are marked Optional, and their tips say so");
+        lc(() => !$("lookupBtn") && !$("mineBtn") && !$("lookupHint") && !tips().lookup && !tips().keywords && tips().product.text.includes("Search eBay") &&
+          !/Look up|Find keywords/.test($("inputCard").textContent), "0.4.0: Look up and Find keywords are gone from the form and its tips; the product tip names Search eBay");
 
         /* -- Storage that throws: everything still works for this visit -- */
         let storageThrows = null;
@@ -2371,6 +2409,12 @@
         panel.dataset.result = "pass";
         return;
       }
+      if (new URLSearchParams(location.search).has("v040")) {
+        await v040Checks();
+        title.textContent = passed + " 0.4.0 checks passed";
+        panel.dataset.result = "pass";
+        return;
+      }
       if (new URLSearchParams(location.search).has("wave2")) {
         await wave2Checks();
         title.textContent = passed + " wave 2 checks passed";
@@ -2511,7 +2555,7 @@
       applyDraft({inputs:{notes:"Recover these notes",productSearch:"Camera"}, data:{title:"Broken", description_paragraphs:{}}, html:"<p>Recover this HTML</p>", reference:{q:"Camera",data:{product_name:[]}}});
       renderDraft();
       check(state.data === null && state.edited && $("notes").value === "Recover these notes" && $("htmlOut").value === "<p>Recover this HTML</p>", "Invalid saved listing recovers input and HTML without rendering failure");
-      check(state.reference === null && $("restructureBtn").style.display === "none", "Invalid saved reference is discarded and unavailable rebuild is hidden");
+      check(!("reference" in state) && $("restructureBtn").style.display === "none", "A saved reference is not restored and unavailable rebuild is hidden");
       const historyBefore = localStorage.getItem(HISTORY_KEY);
       localStorage.setItem(HISTORY_KEY, JSON.stringify([null, 5, [], {draft:[]}, {draft:manual,title:"Recovered entry"}]));
       renderHistory();
@@ -2718,37 +2762,18 @@
       complete(beforeRestore, listing("Wrong replacement")); await third;
       check(state.data.title === "History title" && $("modelMeta").textContent === "History restored", "History restoration survives a late generation response");
 
-      const candidate = {item_id:'v1|123|0', title:'Camera source', url:'https://www.ebay.com/itm/123'};
-      const sourceRef = (model = 'Camera') => ({kind:'ebay-listing', source:candidate, at:'2026-09-10T12:00:00Z', data:{key_specs:{Model:model}}, accepted:false});
-      setupBundle(['A','B','C']);
-      document.querySelectorAll('.bi-lookup')[1].click(); const moved = await nextRequest();
-      document.querySelectorAll('.remove-card')[0].click();
-      check(document.querySelectorAll('.bi-lookup')[0].disabled, 'Moved item retains lookup busy state');
-      moved.resolve(reply({items:[candidate]})); await tick(); await tick();
-      check(!state.bundleItems[0].reference && document.querySelectorAll('.ref-select').length === 1 && !document.querySelectorAll('.bi-lookup')[0].disabled, 'Bundle search follows item identity and requires explicit selection');
-      document.querySelector('.ref-select').click(); const detail = await nextRequest();
-      check(detail.path.startsWith('/ebay/reference?item_id='), 'Selected listing fetches eBay details without AI');
-      detail.resolve(reply(sourceRef('Reference for B'))); await tick(); await tick();
-      check(state.bundleItems[0].notes === 'Original B' && !buildUserMessage().includes('Reference for B'), 'Pending reference stays out of seller notes and generation');
-      const saved = JSON.parse(JSON.stringify(snapshotDraft())); applyDraft(saved); renderDraft();
-      check(state.bundleItems[0].reference.source.item_id === candidate.item_id && document.querySelector('.bi-reference a').href === candidate.url, 'Pending reference restores source provenance and safe link');
-      const notes = document.querySelector('.bundle-card textarea'); notes.value = "Seller's latest observation"; notes.dispatchEvent(new Event('input',{bubbles:true}));
-      document.querySelector('.bi-accept').click();
-      check(state.bundleItems[0].notes === "Seller's latest observation" && buildUserMessage().includes('Reference for B') && buildUserMessage().includes(candidate.url), 'Accepted bundle reference stays separate from observations with provenance in generation');
-      const accepted = JSON.parse(JSON.stringify(snapshotDraft())); applyDraft(accepted); renderDraft();
-      check(state.bundleItems[0].reference.accepted && state.bundleItems[0].reference.at === '2026-09-10T12:00:00Z' && document.querySelector('.bi-accept').disabled, 'Acceptance and retrieval date survive restoration without duplicate acceptance');
-      document.querySelector('.bi-dismiss').click();
-      check(!state.bundleItems[0].reference && state.bundleItems[0].notes === "Seller's latest observation" && !buildUserMessage().includes('Reference for B'), 'Explicit removal preserves observations and removes generation reference');
-      setupBundle(['D','E']); document.querySelector('.bi-lookup').click(); const removed = await nextRequest();
-      document.querySelector('.remove-card').click(); removed.resolve(reply({items:[candidate]})); await tick(); await tick();
-      check(removed.opts.signal.aborted && !state.bundleItems[0].reference && !state.bundleItems[0].lookupCandidates, 'Removed item search cannot attach to a replacement card');
-      document.querySelector('.bi-lookup').click(); const renameSearch = await nextRequest(); renameSearch.resolve(reply({items:[candidate]})); await tick(); await tick();
-      document.querySelector('.ref-select').click(); const staleDetail = await nextRequest();
-      const name = document.querySelector('.bundle-card input'); name.value = 'Renamed'; name.dispatchEvent(new Event('input',{bubbles:true}));
-      staleDetail.resolve(reply(sourceRef())); await tick(); await tick();
-      check(staleDetail.opts.signal.aborted && !state.bundleItems[0].reference && !document.querySelector('.ref-select'), 'Renaming invalidates selected details and candidates');
-      applyDraft({mode:'bundle',bundleItems:[{name:'Legacy',notes:'Preserved old accepted notes',reference:{q:'Legacy',data:{product_name:'Old AI'},accepted:true}}]}); renderDraft();
-      check(state.bundleItems[0].notes === 'Preserved old accepted notes' && document.querySelector('.bi-reference').textContent.includes('Legacy AI') && document.querySelector('.bi-accept').disabled, 'Legacy AI stays labelled and cannot be newly accepted as sourced data');
+      // 0.4.0: a bundle card has a Search eBay link for its own name; Lookup details and references are gone.
+      setupBundle(['Canon AE-1', '']);
+      const cardLinks = () => [...document.querySelectorAll('.bundle-card .bi-search')];
+      check(cardLinks().length === 2 && cardLinks()[0].getAttribute('href') === 'https://www.ebay.com/sch/i.html?_nkw=Canon%20AE-1' && cardLinks()[0].target === '_blank' &&
+        /\bnoopener\b/.test(cardLinks()[0].rel) && !cardLinks()[1].hasAttribute('href') && cardLinks()[1].getAttribute('aria-disabled') === 'true' &&
+        !document.querySelector('.bi-lookup, .bi-candidates, .bi-reference'), "Each bundle card has a Search eBay link for its own name, off while the name is empty, and no Lookup details");
+      const cardName = document.querySelectorAll('.bundle-card .bi-name')[1]; cardName.value = 'FD 50mm f/1.8'; cardName.dispatchEvent(new Event('input', {bubbles: true}));
+      check(cardLinks()[1].getAttribute('href') === 'https://www.ebay.com/sch/i.html?_nkw=FD%2050mm%20f%2F1.8' && !cardLinks()[1].hasAttribute('aria-disabled') && !pending.length,
+        "Typing a bundle item's name points its Search eBay link at that name, without a request");
+      applyDraft({mode:'bundle',bundleItems:[{name:'Legacy',notes:'Preserved old accepted notes',reference:{q:'Legacy',kind:'ebay-listing',data:{key_specs:{Model:'Old reference'}},accepted:true}}]}); renderDraft();
+      check(state.bundleItems[0].notes === 'Preserved old accepted notes' && !('reference' in state.bundleItems[0]) && !buildUserMessage().includes('Old reference') &&
+        !JSON.stringify(snapshotDraft()).includes('Old reference'), "A bundle card saved with a Look up reference keeps its notes; the reference is not restored, sent or saved again");
 
       const setBundleConditions = codes => document.querySelectorAll('.bundle-card select')
         .forEach((select, i) => { select.value = codes[i]; select.dispatchEvent(new Event('change', {bubbles:true})); });
@@ -2794,150 +2819,28 @@
       await blankRun;
       check(state.data.bundle_items.map(b => b.condition).join() === 'New,Used',
         'A blank-named card cannot shift later bundle conditions onto the wrong item');
-      newListing(); $('productSearch').value = 'Fast reference';
-      const fastLookup = lookupProduct(); const fastRef = await nextRequest(); const slowMine = await nextRequest();
-      check(fastRef.path.startsWith('/ebay/search?') && slowMine.path.startsWith('/ebay/search?'), 'Lookup and keywords use eBay search without AI recall');
-      fastRef.resolve(reply({items:[candidate]})); await fastLookup;
-      check(!state.reference && !$('lookupBtn').disabled && $('mineBtn').disabled, 'Candidates finish independently of mining without automatic selection');
-      $('referenceCandidates').querySelector('.ref-select').click(); const selected = await nextRequest(); selected.resolve(reply(sourceRef('Reviewed camera'))); await tick(); await tick();
-      check(!hasGenerationInput(), 'Unaccepted selected reference cannot enable generation');
-      $('refAcceptBtn').click();
-      check(hasGenerationInput() && !$('notes').value, 'Accepted separate reference retains lookup-to-generation behavior without creating seller notes');
-      state.reference.accepted = false; renderReference();
-      $('notes').value = 'My observation'; $('brand').value = 'My brand'; $('condition').value = 'UNTESTED'; $('condNotes').value = 'My flaw';
-      const sellerBefore = ['notes','brand','condition','condNotes','returnsPolicy'].map(id => $(id).value);
-      check(!buildUserMessage().includes('Reviewed camera'), 'Selection alone does not accept specifications into generation');
-      $('refAcceptBtn').click();
-      check(JSON.stringify(sellerBefore) === JSON.stringify(['notes','brand','condition','condNotes','returnsPolicy'].map(id => $(id).value)) && buildUserMessage().includes('Reviewed camera') && buildUserMessage().includes('ACCEPTED SELLER-LISTING REFERENCE') && buildUserMessage().includes('2026-09-10T12:00:00Z'), 'Single acceptance preserves seller fields with a separate dated source block');
-      slowMine.resolve(reply({items:[{title:'Camera lens camera'}]})); await tick(); await tick();
-      const restoredSingle = JSON.parse(JSON.stringify(snapshotDraft())); applyDraft(restoredSingle); renderDraft();
-      check(state.reference.accepted && state.reference.source.url === candidate.url && $('notes').value === 'My observation', 'Single provenance and separation survive draft restoration');
-      const emptySearch = lookupProduct(); const emptyRequests = [await nextRequest(), await nextRequest()];
-      emptyRequests.forEach(r => r.resolve(reply({items:[]}))); await emptySearch; await tick();
-      check(state.reference.accepted && !$('referenceCandidates').querySelector('.ref-select'), 'Empty search keeps an accepted reference and never auto-selects or falls back to AI');
-      $('productSearch').value = ''; $('productSearch').dispatchEvent(new Event('input',{bubbles:true}));
-      $('productBarcode').value = '0 12345-678905'; $('productBarcode').dispatchEvent(new Event('input',{bubbles:true}));
-      const idSearch = lookupProduct(); const idRequests = [await nextRequest(), await nextRequest()];
-      check(idRequests.every(r => r.path.includes('gtin=012345678905') && !r.path.includes('keywords=')), 'Barcode-only reference search preserves normalized identifier without name broadening');
-      idRequests.forEach(r => r.resolve(reply({items:[candidate]}))); await idSearch; await tick();
-      $('referenceCandidates').querySelector('.ref-select').click(); const mismatch = await nextRequest();
-      mismatch.resolve(reply({...sourceRef(),source:{...candidate,item_id:'v1|999|0'}})); await tick(); await tick();
-      check(!state.reference, 'Mismatched selected detail cannot become a reference');
-      $('referenceCandidates').querySelector('.ref-select').click(); const idDetail = await nextRequest(); idDetail.resolve(reply(sourceRef())); await tick(); await tick();
-      $('refAcceptBtn').click(); const acceptedBarcode = state.reference;
-      $('notes').value = 'Barcode item observation'; $('notes').dispatchEvent(new Event('input',{bubbles:true}));
-      check(state.reference === acceptedBarcode && state.reference.accepted, 'Editing seller observations preserves a barcode-only accepted reference');
-      $('referenceCandidates').querySelector('.ref-select').click(); const changedDetail = await nextRequest();
-      $('productBarcode').value = '00123456789012'; $('productBarcode').dispatchEvent(new Event('input',{bubbles:true}));
-      changedDetail.resolve(reply(sourceRef())); await tick(); await tick();
-      check(!state.reference && changedDetail.opts.signal.aborted && !$('referenceCandidates').querySelector('.ref-select'), 'Barcode edit invalidates accepted identity and pending selected details');
-      $('productSearch').value = 'Fast reference'; $('productBarcode').value = ''; state.minedKeywords = ['camera'];
-      state.minedAspects = {Capacity:["UNVERIFIED_CAPACITY"]};
-      check(!buildUserMessage().includes("UNVERIFIED_CAPACITY") && buildUserMessage().includes("not verified facts about this item"), "Aggregate eBay aspects do not become listing facts and keywords remain suggestions");
-      for (const failure of [
-        {ok:false,status:503,json:async()=>({error:"eBay is temporarily unavailable",fallback:true})},
-        {ok:true,status:200,json:async()=>({items:[null]})},
-        {ok:false,status:502,json:async()=>null}
-      ]) {
-        state.minedKeywords = ["stale-keyword"]; state.minedAspects = {Capacity:["old"]};
-        const failedMining = mineKeywords("Fast reference"); const failedRequest = await nextRequest();
-        failedRequest.resolve(failure); await failedMining; flushDraft();
-        const savedMining = JSON.parse(localStorage.getItem(DRAFT_KEY));
-        check(state.minedKeywords.length === 0 && savedMining.minedKeywords.length === 0 && !Object.hasOwn(savedMining, "minedAspects") && !$("mineBtn").disabled, "Failed/malformed mining clears stale keywords and omits unused saved aspects: " + failure.status);
-        const miningErrors = document.querySelectorAll(".toast.err p");
-        const miningMessage = miningErrors[miningErrors.length - 1].textContent;
-        check(miningMessage.includes("just describe the item") && !/keyset|HTTP|retry\b/i.test(miningMessage), "Mining failure offers accurate recovery without guessing credentials: " + failure.status);
-      }
-
-      newListing(); $("productSearch").value = "Camera";
-      state.reference = {data: ListingCore.normalizeReference({product_name: "Previous reference"}), at: new Date().toISOString()};
-      const invalidLookup = lookupProduct();
-      const requests = [await nextRequest(), await nextRequest()];
-      requests[0].resolve(reply({items:null})); requests[1].resolve(reply({items:[]}));
-      await invalidLookup;
-      check(state.reference.data.product_name === "Previous reference" && !$("lookupBtn").disabled, "Invalid single reference preserves previous reference and releases lookup");
-      check(!$("notes").value && !$("brand").value, "Invalid lookup cannot populate notes or brand");
-
-      newListing(); $("notes").value = "Fallback search";
-      const mining = mineKeywords($("notes").value); const oldMining = await nextRequest();
-      $("notes").value = "Different search"; $("notes").dispatchEvent(new Event("input", {bubbles: true}));
-      oldMining.resolve(reply({items: [{title: "Wrong keywords"}]})); await mining;
-      check(state.minedKeywords.length === 0, "Editing fallback search notes drops stale keywords");
-
-      newListing(); $("productSearch").value = "Source camera";
-      const sourceMining = mineKeywords("Source camera"); const sourceRequest = await nextRequest();
-      sourceRequest.resolve(reply({items:[
-        {title:'<b>Camera listing</b>', url:'https://www.ebay.com/itm/123?tracking=secret'},
-        {title:'Unsafe link', url:'javascript:alert(1)'}
-      ]})); await sourceMining; flushDraft();
-      const sourceLink = $("minedSourceList").querySelector('a');
-      check(sourceLink && sourceLink.textContent === '<b>Camera listing</b>' && !$("minedSourceList").querySelector('b') && sourceLink.href === 'https://www.ebay.com/itm/123' && sourceLink.rel.includes('noreferrer'), "Mining sources render escaped titles and safe item links only");
-      const savedSources = JSON.parse(localStorage.getItem(DRAFT_KEY));
-      check(savedSources.minedSources.length === 1 && savedSources.minedSourceQuery === 'Source camera', "Source listings persist with the draft query");
-      $("productSearch").value = 'Other camera'; $("productSearch").dispatchEvent(new Event('input', {bubbles:true}));
-      check(state.minedSources.length === 0 && $("minedSources").hidden, "Product edits clear unrelated search sources");
-      $("productBarcode").value = '0 12345-678905'; $("productBarcode").dispatchEvent(new Event('input', {bubbles:true}));
-      const barcodeSearch = mineKeywords('name must not broaden'); const barcodeRequest = await nextRequest();
-      check(barcodeRequest.path.includes('gtin=012345678905') && !barcodeRequest.path.includes('keywords='), "Barcode search sends only the normalized barcode to eBay");
-      barcodeRequest.resolve(reply({items:[{title:'Barcode camera model',url:'https://www.ebay.com/itm/123'}],cached:true})); await barcodeSearch;
-      check(state.minedSourceQuery === 'Barcode 012345678905' && state.minedSources.length === 1, "Barcode source results retain their search identity");
-      const barcodeDraft = JSON.parse(JSON.stringify(snapshotDraft()));
-      applyDraft(barcodeDraft); renderDraft();
-      check($("productBarcode").value === '0 12345-678905' && state.minedSourceQuery === 'Barcode 012345678905', "Barcode and source identity survive draft restoration");
+      // 0.4.0: the barcode feeds Search eBay. One that isn't valid says so under its field and is not searched.
+      newListing();
       $("productBarcode").value = 'invalid'; $("productBarcode").dispatchEvent(new Event('input', {bubbles:true}));
-      await mineKeywords('Camera');
-      check(!pending.length && !state.minedSources.length, "Invalid barcodes block network calls and cannot fall back to a broader name search");
+      check(!pending.length && !$("searchEbayLink").hasAttribute("href"), "A barcode that isn't valid asks the server for nothing and is not searched");
       check($("productBarcode").getAttribute("aria-invalid") === "true" &&
         $("productBarcode").getAttribute("aria-describedby").includes("barcodeError") &&
         !$("barcodeError").hidden && $("barcodeError").textContent.length > 0,
         "Invalid barcode has persistent feedback associated with its field");
-      applyDraft(barcodeDraft); renderDraft();
-      check($("barcodeError").hidden && !$("productBarcode").hasAttribute("aria-invalid"),
-        "Restoring a draft clears validation feedback from the previous barcode");
-      $("productBarcode").value = 'invalid';
-      await mineKeywords('Camera');
-      newListing();
-      check($("barcodeError").hidden && !$("productBarcode").hasAttribute("aria-invalid"),
-        "New listing clears stale barcode validation feedback");
-      $("productBarcode").value = 'invalid';
-      await mineKeywords('Camera');
-      $("productBarcode").value = '012345678905'; $("productBarcode").dispatchEvent(new Event('input', {bubbles:true}));
+      $("productBarcode").value = '0 12345-678905'; $("productBarcode").dispatchEvent(new Event('input', {bubbles:true}));
       check($("barcodeError").hidden && !$("barcodeError").textContent &&
         !$("productBarcode").hasAttribute("aria-invalid") && $("productBarcode").getAttribute("aria-describedby") === "barcodeHint",
         "Editing barcode clears the old error and preserves usage guidance");
-      const lateBarcode = mineKeywords(''); const lateBarcodeRequest = await nextRequest();
-      $("productBarcode").value = '00123456789012'; $("productBarcode").dispatchEvent(new Event('input', {bubbles:true}));
-      lateBarcodeRequest.resolve(reply({items:[{title:'Old barcode result',url:'https://www.ebay.com/itm/456'}]})); await lateBarcode;
-      check(!state.minedSources.length && !$("mineBtn").disabled, "Editing a barcode prevents late results from attaching to the new item");
-      const emptyBarcode = mineKeywords(''); const emptyBarcodeRequest = await nextRequest();
-      emptyBarcodeRequest.resolve(reply({items:[]})); await emptyBarcode;
-      check(!pending.length && !state.minedKeywords.length && [...document.querySelectorAll('.toast.ok p')].at(-1).textContent.includes('No eBay listings'), "An empty barcode result gives recovery guidance without an automatic broad search");
-      $("productBarcode").value = ''; $("productBarcode").dispatchEvent(new Event('input', {bubbles:true}));
-      savedSources.minedSources.push({title:'Restored unsafe link',url:'https://evil.test/itm/123'});
-      applyDraft(savedSources); renderDraft();
-      check(state.minedSources.length === 1 && !$("minedSources").hidden, "Draft restore revalidates source links");
+      check($("searchEbayLink").getAttribute("href") === "https://www.ebay.com/sch/i.html?_nkw=012345678905", "Search eBay searches the barcode without its spaces and dashes, keeping leading zeros");
+      const barcodeDraft = JSON.parse(JSON.stringify(snapshotDraft()));
+      $("productBarcode").value = 'invalid'; $("productBarcode").dispatchEvent(new Event('input', {bubbles:true}));
+      applyDraft(barcodeDraft); renderDraft();
+      check($("productBarcode").value === '0 12345-678905' && $("barcodeError").hidden && !$("productBarcode").hasAttribute("aria-invalid"),
+        "Restoring a draft brings its barcode back and clears validation feedback from the previous one");
+      $("productBarcode").value = 'invalid'; $("productBarcode").dispatchEvent(new Event('input', {bubbles:true}));
       newListing();
-      check(state.minedSources.length === 0 && $("minedSources").hidden, "New listing clears previous sources");
-
-      $("productSearch").value = 'Earlier camera';
-      const earlierLookup = lookupProduct();
-      const earlierLookupRequests = [await nextRequest(), await nextRequest()];
-      $("productSearch").value = 'New camera'; $("productSearch").dispatchEvent(new Event('input', {bubbles:true}));
-      check(earlierLookupRequests.every(request => request.opts.signal.aborted) && !$("lookupBtn").disabled && !$("mineBtn").disabled, "Editing the product immediately cancels obsolete requests and releases search controls");
-      const newerLookup = lookupProduct();
-      const newerLookupRequests = [await nextRequest(), await nextRequest()];
-      for (const request of earlierLookupRequests) {
-        if (request.path.startsWith('/ebay/search?')) request.resolve(reply({items:[]}));
-        else complete(request, {product_name:'Old camera',summary:'Obsolete'});
-      }
-      await earlierLookup; await tick();
-      check($("lookupBtn").disabled && $("mineBtn").disabled && !state.reference, "Obsolete search cleanup cannot release controls owned by the new search");
-      for (const request of newerLookupRequests) {
-        if (request.path.startsWith('/ebay/search?')) request.resolve(reply({items:[]}));
-        else complete(request, {product_name:'New camera',summary:'Current reference'});
-      }
-      await newerLookup; await tick();
-      check(state.lookupCandidates && !state.reference && !$("lookupBtn").disabled && !$("mineBtn").disabled, "The new product search can complete without waiting for obsolete results");
+      check($("barcodeError").hidden && !$("productBarcode").hasAttribute("aria-invalid") && !$("productBarcode").value,
+        "New listing clears stale barcode validation feedback");
 
       await openSettings();
       renderKeyStatus({provider_storage:'windows_encrypted'});
@@ -2946,8 +2849,6 @@
       renderKeyStatus({provider_storage:'plaintext'});
       check($("settingsKeysNote").textContent.includes(".env file in the Marteloio folder") && !$("settingsKeysNote").textContent.includes("encrypted"),
         "Settings truthfully describe plaintext storage fallback");
-      renderKeyStatus({ebay:{storage:'plaintext'}});
-      check($("settingsKeysNote").textContent.includes(".env file"), "eBay Settings do not claim encryption on plaintext systems");
       // A service's own key box (formerly the Groq key field): saved and tested, and a late answer keeps newer typing.
       const groqKeyBox = $("aiKey-groq");
       groqKeyBox.value = 'gsk_fixtureTypedKey0001';
@@ -2959,37 +2860,16 @@
       rowRequest.resolve(reply({saved:true, provider:'groq', label:'Groq', test:{ok:true, ms:640, model:'fixture'}, status:aiStatus})); await rowSave;
       check(groqKeyBox.value === 'gsk_newerUnsavedFixture' && !aiRowOf('groq').querySelector('.ai-save').disabled, "A late settings save cannot clear newer typed keys");
       check(!/restart/i.test($("settingsOverlay").textContent), "Settings no longer mention restarting a router");
-      showSettingsTab('ebay');
-      $("ebayClientSecret").value = 'fixture-visible-secret';
-      const eye = document.querySelector('.key-eye[data-for="ebayClientSecret"]'); eye.click();
-      check($("ebayClientSecret").type === 'text' && eye.getAttribute('aria-pressed') === 'true', "Key visibility control explicitly reveals the typed value");
       closeSettings();
-      check(!groqKeyBox.value && !keyPaste.input.value && !$("ebayClientSecret").value && $("ebayClientSecret").type === 'password' && eye.getAttribute('aria-pressed') === 'false',
-        "Closing Settings clears transient secrets and restores masking");
+      check(!groqKeyBox.value && !keyPaste.input.value, "Closing Settings clears typed keys");
       await openSettings();
-      check($("ebayClientSecret").type === 'password' && !$("ebayClientSecret").value && !groqKeyBox.value, "Reopening Settings cannot retain a revealed key field");
-      closeSettings();
-
-      await openSettings();
-      $("ebayClientId").value = 'earlier-ebay-fixture';
-      const ebaySave = saveEbayCreds(); const ebayRequest = await nextRequest();
-      await saveEbayCreds();
-      check(!pending.length, "A repeated eBay save cannot submit a second request while busy");
-      $("ebayClientId").value = 'newer-ebay-fixture';
-      ebayRequest.resolve(reply({message:'Saved'})); await ebaySave;
-      check($("ebayClientId").value === 'newer-ebay-fixture' && !$("saveEbayCredsBtn").disabled, "A late eBay save preserves newer typed credentials");
-      const reopenedSave = saveEbayCreds(); const reopenedRequest = await nextRequest();
-      closeSettings(); await openSettings(); $("ebayClientSecret").value = 'reopened-secret-fixture';
-      reopenedRequest.resolve(reply({message:'Saved'})); await reopenedSave;
-      check($("ebayClientSecret").value === 'reopened-secret-fixture', "A save from a closed Settings session cannot clear the reopened form");
-      const rejectedSave = saveEbayCreds(); const rejectedRequest = await nextRequest();
-      rejectedRequest.resolve({ok:false,status:503,json:async()=>({})}); await rejectedSave;
-      check($("ebayClientSecret").value === 'reopened-secret-fixture' && !$("saveEbayCredsBtn").disabled, "An unsuccessful HTTP save preserves credentials and releases the button");
+      check(!groqKeyBox.value && !keyPaste.input.value, "Reopening Settings cannot bring a typed key back");
       closeSettings(); holdSettings = true;
       const earlierOpen = openSettings(); const earlierRead = await nextRequest();
       closeSettings(); await openSettings();
-      earlierRead.resolve(reply({ebay:{client_id:{set:true,masked:'STALE-FIXTURE'}}})); await earlierOpen;
-      check(!$("ebayClientIdCurrent").textContent.includes('STALE-FIXTURE'), "Late status from a closed Settings session cannot overwrite current status");
+      const keysNoteBefore = $("settingsKeysNote").textContent;
+      earlierRead.resolve(reply({provider_storage: keysNoteBefore.includes(".env") ? 'windows_encrypted' : 'plaintext'})); await earlierOpen;
+      check($("settingsKeysNote").textContent === keysNoteBefore, "Late status from a closed Settings session cannot overwrite current status");
       holdSettings = true;
       const expiredRead = settingsJSON('/settings', {}, 1).catch(error => error);
       const expiredRequest = await nextRequest(); await new Promise(resolve => setTimeout(resolve, 10));
@@ -3082,21 +2962,8 @@
       check($("productBarcode").value === "" && !draftTimer && !draftHasContent(),
         "Leaving before debounce flushes a cleared barcode for restoration");
 
-      state.reference = {q:"Fixture camera", ...sourceRef()};
-      renderReference();
-      $("refAcceptBtn").focus(); $("refAcceptBtn").click();
-      check(document.activeElement === $("refDismissBtn"), "Accepting a focused reference moves focus to its removal control");
-      $("refDismissBtn").focus(); $("refDismissBtn").click();
-      check(document.activeElement === $("productSearch"), "Dismissing a focused reference returns focus to product lookup");
       setupBundle(["First", "Second"]);
-      const focusItem = state.bundleItems[0];
-      focusItem.reference = {q:"First", ...sourceRef()};
-      renderBundleReference(focusItem);
       let focusCard = $("bundleCards").firstElementChild;
-      focusCard.querySelector(".bi-accept").focus(); focusCard.querySelector(".bi-accept").click();
-      check(document.activeElement === focusCard.querySelector(".bi-dismiss"), "Accepting a bundle reference focuses its removal control");
-      focusCard.querySelector(".bi-dismiss").focus(); focusCard.querySelector(".bi-dismiss").click();
-      check(document.activeElement === focusCard.querySelector("input"), "Dismissing a bundle reference focuses that item's name");
       focusCard.querySelector(".remove-card").focus(); focusCard.querySelector(".remove-card").click();
       check(document.activeElement === $("bundleCards").querySelector("input") && document.activeElement.value === "Second",
         "Removing a focused bundle item focuses the next remaining item");
@@ -3108,11 +2975,6 @@
       focusCard.querySelector(".remove-card").focus(); focusCard.querySelector(".remove-card").click();
       check(document.activeElement === $("bundleCards").querySelector("input") && document.activeElement.value === "Keep",
         "Removing the last of several bundle items focuses the previous item");
-      newListing();
-      state.reference = {q:"Fixture camera", ...sourceRef()};
-      renderReference(); $("brand").focus(); acceptReference(); dismissReference();
-      check(document.activeElement === $("brand"), "Reference updates do not move focus from an unrelated field");
-
       // ---- Reproduced bug regressions: each fails on the code before its fix ----
       const lastToast = kind => [...document.querySelectorAll('.toast.' + kind + ' p')].at(-1)?.textContent || '';
       const hangingBody = request => ({ok:true, status:200, json:() => new Promise((_, reject) =>
@@ -3123,11 +2985,6 @@
       inflight.generate.timedOut = true; inflight.generate.abort(); await slowBody;
       check(!busyToast && lastToast('err').includes('The AI took too long to answer') && !$("generateBtn").disabled,
         "A deadline while the generation body is read reports a timeout instead of a stuck busy toast");
-      const slowMineBody = mineKeywords("Timeout body fixture"); const slowMineRequest = await nextRequest();
-      slowMineRequest.resolve(hangingBody(slowMineRequest)); await tick(); await tick();
-      inflight.mine.timedOut = true; inflight.mine.abort(); await slowMineBody;
-      check(lastToast('err').includes('eBay took too long to answer') && !$("mineBtn").disabled,
-        "A deadline while the keyword body is read reports a timeout");
 
       newListing(); $("notes").value = "Single camera";
       state.condVaries = true;
@@ -3157,30 +3014,8 @@
           "An imported style seed of " + badSeed + " is replaced instead of breaking rendering");
       }
 
-      newListing(); $("notes").value = "a".repeat(59) + "\u{1F4F7} camera body";
-      $("mineBtn").click(); const emojiRequest = await nextRequest();
-      check(emojiRequest.path.includes(encodeURIComponent("a".repeat(59) + "\u{1F4F7}")), "Fallback keyword query never splits an emoji");
-      emojiRequest.resolve(reply({items:[]})); await tick(); await tick();
-
       setupBundle(["", " "]); $("notes").value = "Bundle overall";
       check(!buildUserMessage().includes("BUNDLE ITEMS"), "Blank bundle cards do not send an empty BUNDLE ITEMS header");
-
-      setupBundle(["Lookup A"]); document.querySelector('.bi-lookup').click(); const removedLookup = await nextRequest();
-      check(busyToast, "Bundle lookup shows its busy toast");
-      document.querySelector('.remove-card').click();
-      check(!busyToast && !Object.keys(inflight).length, "Removing a bundle card mid-lookup clears the busy toast");
-      removedLookup.resolve(reply({items:[]})); await tick(); await tick();
-      setupBundle(["Lookup B"]); document.querySelector('.bi-lookup').click(); const renamedLookup = await nextRequest();
-      const lookupName = document.querySelector('.bundle-card input'); lookupName.value = "Renamed B"; lookupName.dispatchEvent(new Event('input', {bubbles:true}));
-      check(!busyToast, "Renaming a bundle card mid-lookup clears the busy toast");
-      renamedLookup.resolve(reply({items:[]})); await tick(); await tick();
-
-      newListing(); $('productSearch').value = 'Lookup busy fixture';
-      const busyLookup = lookupProduct(); const busyLookupRequest = await nextRequest(); const busyLookupMine = await nextRequest();
-      busyLookupMine.resolve(reply({items:[{title:'Camera lens', url:'https://www.ebay.com/itm/9'}]})); await tick(); await tick();
-      check(busyToast && busyToast.textContent.includes('Searching eBay'), "Keywords found during Lookup keep Lookup's busy toast");
-      busyLookupRequest.resolve(reply({items:[]})); await busyLookup;
-      check(!busyToast, "Lookup's busy toast ends when Lookup finishes");
 
       state.data = ListingCore.normalizeListing(listing("Limits fixture")); state.dataMode = "single";
       state.contentEdits = null; renderAll();
@@ -3499,7 +3334,7 @@
       const templateRun = generate(); const templateRequest = await nextRequest();
       complete(templateRequest, {...listing("Template camera title"), condition_rating:"USED", condition_notes:"Scratch on lens"}); await templateRun;
       check(!$("saveTemplateBtn").disabled && state.data.condition_rating === "USED", "A generated listing can be saved as a template");
-      $("aiKey-groq").value = "never-in-template-fixture"; $("ebayClientSecret").value = "never-in-template-secret";
+      $("aiKey-groq").value = "never-in-template-fixture";
       $("draftsBtn").click(); $("saveTemplateBtn").click();
       check(!$("templateForm").hidden && $("templateNameInput").value === "Template camera title" && document.activeElement === $("templateNameInput"),
         "Save as template asks for a name inline, defaulting to the title");
@@ -3510,7 +3345,7 @@
         savedTemplate.includedItems.join() === "Camera body" && Number.isSafeInteger(savedTemplate.styleSeed) &&
         !/Scratch on lens|012345678905|never-in-template|USED|condNotes|productBarcode|groq|ebay/i.test(templateRaw),
         "A template keeps the listing and inputs but no condition, barcode, settings or keys");
-      $("aiKey-groq").value = ""; $("ebayClientSecret").value = "";
+      $("aiKey-groq").value = "";
       $("notes").value = "Different current work"; $("notes").dispatchEvent(new Event("input", {bubbles:true}));
       const pendingBeforeTemplate = pending.length;
       { const stored = JSON.parse(localStorage.getItem(TEMPLATES_KEY)); stored[0].data.model_title_length = 120; localStorage.setItem(TEMPLATES_KEY, JSON.stringify(stored)); renderTemplates(); }
@@ -3802,9 +3637,7 @@
       check(!/<(?:style|script|input|svg|iframe|img|a)\b/i.test(simpleOutput) && simpleOutput.includes("&lt;script&gt;"), "Simple HTML omits interactive and remote elements and escapes text");
       check(simpleOutput.includes("Simple title") && simpleOutput.includes("Camera") && simpleOutput.includes("See the return details on this eBay listing"), "Simple HTML retains content and explicit default policy");
       $("styleChoice").value = "auto";
-      check($("generateBtn").textContent.includes("Generate listing") && $("mineBtn").textContent === "Find keywords", "Primary actions use clear task names");
-      state.lookupCandidates = {q:'Camera', barcode:'', items:[{...candidate,title:'Long reference title '.repeat(10)}]};
-      state.reference = {q:'Camera',...sourceRef()}; renderReference();
+      check($("generateBtn").textContent.includes("Generate listing") && $("searchEbayLink").textContent.trim().startsWith("Search eBay"), "Primary actions use clear task names");
       const mobile = document.createElement("iframe");
       mobile.style.cssText = "width:390px;height:700px;border:0;display:block";
       const mobileLoaded = new Promise(resolve => mobile.onload = resolve);
@@ -3818,8 +3651,8 @@
         mobileDoc.querySelector("header").getBoundingClientRect().height < 220,
         theme + " mobile brand header keeps theme controls within a compact layout");
       const mobileQuery = mobileDoc.getElementById("productSearch").getBoundingClientRect();
-      const mobileKeywords = mobileDoc.getElementById("mineBtn").getBoundingClientRect();
-        check(mobileKeywords.height >= 44 && mobileKeywords.top >= mobileQuery.bottom, theme + " mobile lookup input has its own row and usable button height");
+      const mobileSearch = mobileDoc.getElementById("searchEbayLink").getBoundingClientRect();
+        check(mobileSearch.height >= 44 && mobileSearch.top >= mobileQuery.bottom, theme + " mobile product name has its own row, with Search eBay under it at a usable height");
         const mobileStyle = mobile.contentWindow.getComputedStyle(mobileDoc.getElementById("inputCard"));
         check(contrast(mobileStyle.color, mobileStyle.backgroundColor) >= 4.5,
           theme + " mobile card text remains readable at 390px");
@@ -3963,8 +3796,6 @@
           $("notes").value = "Canon AE-1 Program 35mm film camera body, chrome. Shutter fires at every speed, meter responds. Light seals replaced. Small dent on the rewind knob. Comes with body cap and strap; no lens.";
           $("brand").value = "Canon"; $("condition").value = "USED"; $("condNotes").value = "Light wear on the top plate";
           state.includedItems = ["Camera body", "Body cap", "Strap"];
-          state.minedKeywords = ["canon", "ae-1", "program", "35mm", "slr", "film", "camera", "chrome"];
-          state.reference = {...sourceRef("AE-1 Program"), accepted: true};
           const run = generate(); const request = await nextRequest();
           fullBody = bodyOf(request);
           complete(request, fullListing("Canon AE-1 Program 35mm SLR Film Camera Body Chrome")); await run;
@@ -4028,8 +3859,8 @@
           let body = bodyOf(request);
           sectionSizes.description = promptChars(body);
           check(body.max_tokens === 800 && body.messages[0].content.includes(generationRule(4)) && body.messages[1].content.includes("CONDITION NOTES: Light wear on the top plate") &&
-            body.messages[1].content.includes("WHAT'S INCLUDED: Camera body, Strap") && body.messages[1].content.includes("ACCEPTED SELLER-LISTING REFERENCE"),
-            "The description request carries the description rule, condition notes, included items and the accepted reference");
+            body.messages[1].content.includes("WHAT'S INCLUDED: Camera body, Strap") && !/REFERENCE|KEYWORD SUGGESTIONS/.test(body.messages[1].content),
+            "The description request carries the description rule, condition notes and included items, and no reference or keyword block");
           complete(request, {description_paragraphs: ["Fresh paragraph one.", "Fresh paragraph two.", "Fresh paragraph three."]}); await tick(); await tick();
           check(state.data.description_paragraphs.join("|") === "Fresh paragraph one.|Fresh paragraph two.|Fresh paragraph three." &&
             without(state.data, ["description_paragraphs"]) === without(before, ["description_paragraphs"]) && $("titleIn").value === "Seller typed title" &&
@@ -4231,14 +4062,13 @@
           check(!$("templateSuggest").hidden, "Reset fixture: the matching template is suggested");
           $("templateSuggestDismiss").click();
           typeInto("notes", "Nikon FM2 body, chrome. Shutter fires at every speed."); $("condition").value = "USED";
-          state.minedKeywords = ["nikon", "fm2", "slr"]; state.reference = {...sourceRef("FM2"), accepted: true}; renderChips(); renderReference();
           run = generate(); complete(await nextRequest(), fm2); await run;
           const section = (() => { $("regenBtn").click(); document.querySelector('.regen-item[data-section="title"]').click(); return nextRequest(); })();
           complete(await section, {title: "Nikon FM2 35mm SLR Film Camera Body Chrome Manual Focus Tested Shutter Meter Working Classic Light Seals"});
           await tick(); await tick();
           $("condition").value = "FOR_PARTS"; $("condition").dispatchEvent(new Event("change", {bubbles:true}));
           $("modeBundle").click(); $("addBundleItemBtn").click();
-          $("editContentBtn").click(); $("minedPanel").open = true; $("kwPanel").open = true;
+          $("editContentBtn").click(); $("kwPanel").open = true;
           $("viewMobile").click(); $("tabHtml").click();
           const flight = document.createElement("div"); flight.className = "course-flight"; document.body.append(flight);
           $("rulerWaypoint").style.opacity = "0"; $("rulerWaypoint").classList.add("landing");
@@ -4246,39 +4076,35 @@
           if (copyTarget) copyTarget.writeText = async () => {};
           try { $("copyHtmlBtn").click(); await tick(); await tick(); } finally { if (copyTarget) copyTarget.writeText = originalWrite; }
           check(state.copied && !$("saveTemplatePrompt").hidden && !$("regenNotice").hidden && budget.undo && budget.dismissed.size === 1 &&
-            !$("titleShortenedNotice").hidden && conditionNoticeShown && liveToasts("note").length && state.reference?.accepted &&
-            $("kwChips").children.length === 3 && $("minedChips").children.length === 3 && document.querySelectorAll("#bundleCards .bundle-card").length === 1 &&
+            !$("titleShortenedNotice").hidden && conditionNoticeShown && liveToasts("note").length &&
+            $("kwChips").children.length === 3 && document.querySelectorAll("#bundleCards .bundle-card").length === 1 &&
             $("contentEditor").open && $("htmlPanel").hidden === false && $("previewPanel").classList.contains("mobile") &&
             [...$("courseSteps").children].map(li => li.className).join() === "done,done,done,done",
             "Reset fixture: every per-draft notice, prompt, panel and view is active before New listing");
           check(shown($("nextListingNudge")) && $("nextListingNudge").textContent.includes("Done with this one?") &&
             $("nextListingBtn")?.textContent === "Start a new listing" && $("nextListingNudge").closest("#outputCard"),
             "After Copy HTML the output column offers “Done with this one? Start a new listing”");
-          $("mineBtn").click();
-          const staleSearch = await nextRequest();
           $("regenBtn").click(); document.querySelector('.regen-item[data-section="description"]').click();
           for (let i = 0; i < 5; i++) await tick();
           const sectionInFlight = pending.splice(pending.findIndex(request => request.path === "/llm/chat/completions") >>> 0, 1)[0];
-          check(staleSearch.path.startsWith("/ebay/search?") && sectionInFlight && inflight.section && inflight.mine, "Reset fixture: a keyword search and a section regenerate are in flight");
+          check(sectionInFlight && inflight.section, "Reset fixture: a section regenerate is in flight");
           confirms = 0;
           $("nextListingBtn")?.click();
           const steps = [...$("courseSteps").children].map(li => li.className).join();
           check(confirms === 0 && state.data === null && loadHistory()[0].draft.data?.title.startsWith("Nikon FM2") && loadHistory()[0].draft.inputs.productSearch === "Nikon FM2",
             "The nudge starts a new listing and the copied draft is in Recent drafts");
-          check(!Object.keys(inflight).length && $("regenBtn").textContent === "Regenerate…" && !$("regenBtn").hasAttribute("aria-busy") &&
-            !$("mineBtn").disabled && !$("lookupBtn").disabled, "New listing cancels the keyword search and the section regenerate");
+          check(!Object.keys(inflight).length && $("regenBtn").textContent === "Regenerate…" && !$("regenBtn").hasAttribute("aria-busy"),
+            "New listing cancels the section regenerate");
           if (sectionInFlight) complete(sectionInFlight, {description_paragraphs: ["Stale section reply"]});
-          staleSearch.resolve(reply({keywords: ["stale"], sources: []}));
           await tick(); await tick(); await tick();
-          check(state.data === null && !state.minedKeywords.length && !$("minedChips").children.length, "Replies to cancelled requests never land on the new listing");
-          check(state.data === null && state.html === "" && !state.edited && state.contentEdits === null && state.template === null && state.reference === null &&
-            !state.copied && state.mode === "single" && !state.bundleItems.length && !state.includedItems.length && !state.minedKeywords.length &&
-            !state.minedSources.length && state.lookupCandidates === null && !conditionNoticeShown && budget.dismissed.size === 0 && !budget.savePromptShown && budget.undo === null,
+          check(state.data === null, "Replies to cancelled requests never land on the new listing");
+          check(state.data === null && state.html === "" && !state.edited && state.contentEdits === null && state.template === null &&
+            !state.copied && state.mode === "single" && !state.bundleItems.length && !state.includedItems.length && !conditionNoticeShown && budget.dismissed.size === 0 && !budget.savePromptShown && budget.undo === null,
             "New listing resets the draft state, template dismissals, save-prompt flag, section Undo and condition notice flag");
           check(["titleShortenedNotice", "templateNotice", "saveTemplatePrompt", "regenNotice", "regenHint", "templateSuggest", "nextListingNudge"].every(id => $(id)?.hidden) &&
-            !liveToasts("note").length && !$("refPanel").classList.contains("visible") && !$("referenceCandidates").children.length && !$("editBadge").classList.contains("visible"),
-            "New listing hides the shortened-title, template, save-as-template, regenerate, condition and copy notices and the reference panel");
-          check(!$("minedPanel").open && !$("kwPanel").open && $("minedCount").textContent === "" && $("kwCount").textContent === "" && !$("kwChips").children.length &&
+            !liveToasts("note").length && !$("editBadge").classList.contains("visible"),
+            "New listing hides the shortened-title, template, save-as-template, regenerate, condition and copy notices");
+          check(!$("kwPanel").open && $("kwCount").textContent === "" && !$("kwChips").children.length &&
             !$("contentEditor").open && $("contentEditor").hidden && $("editContentBtn").getAttribute("aria-expanded") === "false" &&
             !$("bundleSection").classList.contains("visible") && !$("bundleCards").children.length && $("modeSingle").getAttribute("aria-pressed") === "true" && $("includedInput").value === "",
             "New listing closes the keyword disclosures and content editor, and clears keyword ideas and bundle cards");
@@ -4343,65 +4169,6 @@
         window.fetch = (path, opts) => { if (String(path).startsWith("/llm/")) aiCalls++; return realFetch(path, opts); };
         pending.splice(0);
         try {
-          // 1. Lookup results: collapsible, scrolling, selected first, explicit accept.
-          newListing();
-          typeInto($("productSearch"), "Panel camera");
-          const many = Array.from({length: 14}, (_, i) => ({item_id: "v1|77" + i + "|0", title: "Panel camera listing " + i, url: "https://www.ebay.com/itm/77" + i}));
-          await act(async () => {
-            const run = lookupProduct(); const requests = [await nextRequest(), await nextRequest()];
-            requests.forEach(request => request.resolve(reply({items: many}))); await run; await tick();
-          });
-          const box = () => $("referenceCandidates").querySelector(".ref-results");
-          const toggle = () => box().querySelector(".ref-results-toggle");
-          const list = () => box().querySelector(".ref-results-body");
-          lc(() => toggle().tagName === "BUTTON" && toggle().getAttribute("aria-expanded") === "true" && toggle().textContent.includes("14 matching listings") &&
-            !list().hidden && toggle().getAttribute("aria-controls") === list().id, "Lookup results open as a disclosure whose header counts the matching listings");
-          lc(() => { const css = getComputedStyle(list()); return css.overflowY === "auto" && css.overscrollBehaviorY === "contain" && css.maxHeight === "320px" &&
-            list().scrollHeight > list().clientHeight && list().getBoundingClientRect().height <= 321; }, "The results scroll inside a 320px panel with overscroll contained");
-          lc(() => list().tabIndex === 0 && list().getAttribute("role") === "region" && /matching listings/.test(list().getAttribute("aria-label")),
-            "The results panel is a labelled region that can be scrolled from the keyboard");
-          lc(() => /@media \(max-width: 720px\) \{ \.ref-results-body \{ max-height: 50vh; \} \}/.test(document.querySelector("style").textContent),
-            "On phones the results panel is at most half the screen tall");
-          await act(() => toggle().click());
-          lc(() => list().hidden && toggle().getAttribute("aria-expanded") === "false", "The header collapses the results");
-          await act(() => toggle().click());
-          await act(async () => {
-            list().querySelectorAll(".ref-select")[5].click(); const detail = await nextRequest();
-            detail.resolve(reply({...sourceRef("Panel model"), source: many[5]})); await tick(); await tick();
-          });
-          lc(() => state.reference && !state.reference.accepted && !list().hidden && list().querySelector(".ref-row").classList.contains("selected") &&
-            list().querySelector(".ref-row a").textContent === many[5].title, "A listing under review moves to the top, marked Selected, and is not accepted yet");
-          await act(() => $("refAcceptBtn").click());
-          lc(() => state.reference.accepted && list().hidden && toggle().getAttribute("aria-expanded") === "false" && box().classList.contains("accepted") &&
-            toggle().textContent.includes(many[5].title) && box().querySelector(".ref-remove").textContent === "Remove reference",
-            "Accepting collapses the results to a header naming the accepted listing, with Remove reference");
-          await act(() => toggle().click());
-          lc(() => { const rows = [...list().querySelectorAll(".ref-row")]; return !list().hidden && rows.length === 14 && rows[0].classList.contains("selected") &&
-            rows[0].querySelector(".ref-tag").textContent === "Selected" && rows[0].querySelector("a").textContent === many[5].title &&
-            rows.filter(row => row.classList.contains("selected")).length === 1 && rows[1].querySelector("a").textContent === many[0].title; },
-            "Re-expanding shows the accepted listing first, marked Selected, then the others in order");
-          await act(() => box().querySelector(".ref-remove").click());
-          lc(() => state.reference === null && !list().hidden && toggle().getAttribute("aria-expanded") === "true" && !box().classList.contains("accepted") &&
-            !list().querySelector(".ref-row.selected") && document.activeElement === toggle() && !$("refPanel").classList.contains("visible"),
-            "Remove reference clears the accepted reference and opens the results again");
-          setupBundle(["Shared lookup card"]);
-          const cardBox = () => document.querySelector(".bi-candidates .ref-results");
-          await act(async () => {
-            document.querySelector(".bi-lookup").click(); const search = await nextRequest();
-            search.resolve(reply({items: many.slice(0, 3)})); await tick(); await tick();
-          });
-          lc(() => cardBox().querySelector(".ref-results-toggle").textContent.includes("3 matching listings") && cardBox().querySelector(".ref-results-body").id !== "lookup-results",
-            "Bundle Lookup details uses the same collapsible results, with its own id");
-          await act(async () => {
-            cardBox().querySelectorAll(".ref-select")[2].click(); const detail = await nextRequest();
-            detail.resolve(reply({...sourceRef("Card model"), source: many[2]})); await tick(); await tick();
-            document.querySelector(".bi-accept").click();
-          });
-          lc(() => state.bundleItems[0].reference.accepted && cardBox().querySelector(".ref-results-body").hidden && cardBox().querySelector(".ref-remove"),
-            "Accepting a bundle card reference collapses that card's results");
-          await act(() => cardBox().querySelector(".ref-remove").click());
-          lc(() => !state.bundleItems[0].reference && !cardBox().querySelector(".ref-results-body").hidden, "The card's Remove reference opens its results again");
-
           // 2. What's included follows the bundle cards.
           newListing();
           await act(() => { $("modeBundle").click(); $("addBundleItemBtn").click(); $("addBundleItemBtn").click(); });
@@ -4518,12 +4285,6 @@
           await act(() => typeInto(cards()[0].querySelector("input"), "Nintendo Switch console OLED"));
           lc(() => state.bundleItems[1].brand === "" && state.bundleItems[1].brandSource === "seller" && cards()[1].querySelector(".bi-brand").value === "",
             "A brand the seller cleared is never filled in again");
-          await act(() => {
-            state.reference = {...sourceRef(), data: {key_specs: {Brand: "Aurora"}}, accepted: true};
-            $("addBundleItemBtn").click(); typeInto(cards().at(-1).querySelector("input"), "Aurora lens cap");
-          });
-          lc(() => state.bundleItems.at(-1).brand === "Aurora" && state.bundleItems.at(-1).brandSource === "auto", "A brand from an accepted reference can be matched too");
-          state.reference = null;
 
           // 5. Persistence: draft, history, template and backup keep the new state; old drafts still load.
           await act(() => { $("descToItems").click(); $("descToItems").click(); });
@@ -4685,25 +4446,7 @@
           await act(async () => { $("addBundleItemBtn").dispatchEvent(new PointerEvent("pointerup", {bubbles: true})); await tick(); await tick(); });
           lc(() => folded(first()), "It folds once the press is released, so the click lands where it was aimed");
 
-          // Lookups and invalid fields keep a card open.
-          await act(async () => {
-            summaryOf(first()).click();
-            first().querySelector(".bi-lookup").focus(); first().querySelector(".bi-lookup").click();
-            await leave();
-          });
-          const search = pending.find(request => request.path.startsWith("/ebay/search?"));
-          lc(() => search && inflight[bundleKey(state.bundleItems[0])] && open(first()), "A card with Lookup details in flight stays expanded when focus leaves");
-          await act(() => first().querySelector(".bi-name").dispatchEvent(new KeyboardEvent("keydown", {key: "Escape", bubbles: true, cancelable: true})));
-          lc(() => open(first()), "Escape does not fold a card while its lookup is running");
-          await act(async () => {
-            search.resolve(reply({items: [{item_id: "v1|880|0", title: "Switch OLED listing", url: "https://www.ebay.com/itm/880"}]}));
-            pending.splice(pending.indexOf(search), 1);
-            await tick(); await tick(); await tick();
-            first().querySelector(".bi-name").focus(); await leave();
-          });
-          lc(() => open(first()) && !first().querySelector(".ref-results-body").hidden, "An open lookup results panel keeps the card expanded");
-          await act(async () => { first().querySelector(".ref-results-toggle").click(); first().querySelector(".bi-name").focus(); await leave(); });
-          lc(() => folded(first()), "Once the results are closed the filled card folds again");
+          // An invalid field keeps a card open.
           await act(async () => {
             summaryOf(first()).click();
             first().querySelector("textarea").setAttribute("aria-invalid", "true");
@@ -5080,31 +4823,16 @@
             lc(() => reached === 2, "#28 On a phone a new listing scrolls its title into view, smoothly unless reduced motion is on");
           }
 
-          // #30 Barcode problems are shown, not hidden under the folded More options.
-          // Requests older code sends are answered after each check, so nothing waits forever.
-          const answerLeftovers = async (run, before) => { while (pending.length > before) pending.pop().resolve(reply({items: []})); await run; };
-          newListing(); typeInto($("productSearch"), "Canon AE-1"); $("productBarcode").value = "012345678905"; $("moreOptions").open = false;
-          let pendingBefore = pending.length;
-          let lookupRun = lookupProduct(); await tick(); await tick();
-          lc(() => pending.length === pendingBefore && $("moreOptions").open && document.activeElement === $("productBarcode") &&
-            $("productBarcode").getAttribute("aria-invalid") === "true" && !$("barcodeError").hidden && /searches by this barcode/.test($("barcodeError").textContent),
-            "#30 Look up with a barcode hidden in More options shows and marks the barcode instead of searching it");
-          await answerLeftovers(lookupRun, pendingBefore);
-          let lookupByBarcode = false;
-          await act(async () => {
-            const run = lookupProduct(); const requests = [await nextRequest(), await nextRequest()];
-            lookupByBarcode = requests.every(request => request.path.includes("gtin=012345678905"));
-            requests.forEach(request => request.resolve(reply({items: []}))); await run;
-          });
-          lc(() => lookupByBarcode && $("barcodeError").hidden && !$("productBarcode").hasAttribute("aria-invalid"), "#30 Choosing Look up again searches the barcode now in view");
-          pending.splice(0);
-          newListing(); typeInto($("productSearch"), "Canon AE-1"); $("productBarcode").value = "123"; $("moreOptions").open = false;
-          pendingBefore = pending.length;
-          lookupRun = lookupProduct(); await tick(); await tick();
-          lc(() => pending.length === pendingBefore && $("moreOptions").open && document.activeElement === $("productBarcode") &&
+          // #30 (0.4.0) A barcode folded away in More options is never a hidden cause: the hint under the product name
+          // says what Search eBay searches, and a barcode that isn't valid is named there too.
+          newListing(); typeInto($("productSearch"), "Canon AE-1"); typeInto($("productBarcode"), "012345678905"); $("moreOptions").open = false;
+          lc(() => $("searchHint").textContent.includes("012345678905") && $("searchEbayLink").getAttribute("href").endsWith("_nkw=012345678905"),
+            "#30 With More options folded, the hint under the product name says Search eBay searches the barcode");
+          typeInto($("productBarcode"), "123");
+          lc(() => /barcode in More options isn.t valid/.test($("searchHint").textContent) && $("searchEbayLink").getAttribute("href").endsWith("_nkw=Canon%20AE-1") &&
             $("productBarcode").getAttribute("aria-invalid") === "true" && /8, 12, 13 or 14/.test($("barcodeError").textContent),
-            "#30 A barcode that stops Look up is shown, focused and marked");
-          await answerLeftovers(lookupRun, pendingBefore);
+            "#30 A barcode that isn't valid is named under the product name, marked at its field and not searched");
+          newListing();
 
           // #32 Focus after Restore and after deleting a template.
           newListing(); typeInto($("notes"), "Focus restore fixture");
@@ -5203,6 +4931,7 @@
       await wave2Checks();
       await wave3Checks();
       await qaChecks();
+      await v040Checks();
 
       title.textContent = passed + " browser regression checks passed";
       panel.dataset.result = "pass";
@@ -5212,6 +4941,7 @@
       panel.append(rerun);
     } catch (e) {
       title.textContent = "FAILED after " + passed + " checks: " + e.message;
+      panel.dataset.stack = String(e && e.stack || "").split("\n").slice(0, 6).join(" | ");
       panel.dataset.result = "fail";
       console.error(e);
     }

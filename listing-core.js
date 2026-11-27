@@ -257,17 +257,6 @@
     if (value.trim() && !/^(?:[0-9]{8}|[0-9]{12,14})$/.test(code)) throw new Error('Enter a barcode with 8, 12, 13 or 14 digits, including leading zeros.');
     return code;
   }
-  function titleKeywords(items, stopwords, limit = 15) {
-    const frequency = new Map();
-    for (const item of items) {
-      const tokens = String(item.title || "").toLowerCase().match(/[a-z0-9]+(?:[-./][a-z0-9]+)*/g) || [];
-      for (const token of new Set(tokens)) {
-        if ((token.length < 3 && !(/[a-z]/.test(token) && /[0-9]/.test(token))) || stopwords.has(token)) continue;
-        frequency.set(token, (frequency.get(token) || 0) + 1);
-      }
-    }
-    return [...frequency].sort((a, b) => b[1] - a[1]).slice(0, limit).map(([token]) => token);
-  }
   // Shared with the content editor so seller edits are checked up front.
   const LIMITS = Object.freeze({list: 40, specifics: 30, text: 4000, specificLabel: 100, specificValue: 1000});
   function strings(value, field, max = LIMITS.list) {
@@ -291,40 +280,6 @@
       Object.defineProperty(result, key, {value: val.trim().slice(0, valueLimit), enumerable: true});
     }
     return result;
-  }
-  function normalizeReference(value) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-      throw new Error("Lookup returned an invalid product reference. Please retry.");
-    }
-    const result = {};
-    for (const field of ["product_name", "brand", "release_year", "summary"]) {
-      if (value[field] != null && typeof value[field] !== "string") {
-        throw new Error("Invalid reference " + field + ". Please retry.");
-      }
-      result[field] = (value[field] || "").trim().slice(0, field === "summary" ? 4000 : 300);
-    }
-    result.key_specs = textMap(value.key_specs, "reference specs", 30, 100, 1000);
-    if (!result.product_name && !result.summary) {
-      throw new Error("Lookup returned an empty product reference. Please retry.");
-    }
-    return result;
-  }
-  function normalizeCandidates(items) {
-    if (!Array.isArray(items)) throw new Error("Invalid eBay search response.");
-    return items.slice(0, 20).flatMap(item => {
-      if (!item || typeof item.item_id !== 'string' || !/^v1\|[0-9]{1,20}\|[0-9]{1,20}$/.test(item.item_id || '')) return [];
-      const links = normalizeSearchSources([item]);
-      return links.length && new URL(links[0].url).pathname.split('/').filter(Boolean).at(-1) === item.item_id.split('|')[1] ? [{...links[0], item_id:item.item_id}] : [];
-    });
-  }
-  function normalizeSourcedReference(ref) {
-    const source = normalizeCandidates(ref && ref.source ? [{...ref.source, item_id:ref.source.item_id}] : [])[0];
-    if (!ref || ref.kind !== 'ebay-listing' || !source || typeof ref.at !== 'string' || !Number.isFinite(Date.parse(ref.at)))
-      throw new Error("Marteloio couldn't check where these details came from. Pick the listing again.");
-    const allowed = new Set(['brand','model','mpn','gtin','upc','ean','isbn','color','colour','material','type','connectivity','storage capacity','screen size','processor','ram size','maximum resolution','mount','focal length','maximum aperture','compatible brand','compatible model']);
-    const specs = Object.fromEntries(Object.entries(textMap(ref.data && ref.data.key_specs, "reference specs", 30, 100, 1000)).filter(([key]) => allowed.has(key.toLowerCase())));
-    if (!Object.keys(specs).length) throw new Error("This listing has no product details Marteloio can use. Pick another one, or just describe the item.");
-    return {kind:'ebay-listing', source, at:ref.at, data:{product_name:'', key_specs:specs}, accepted:ref.accepted === true};
   }
   // The callout template prints its own "PLEASE NOTE:" label, so a model that
   // prefixes one too renders it twice. A separator is required after the label
@@ -378,28 +333,12 @@
     }
     return result;
   }
-  function normalizeSearchSources(items) {
-    if (!Array.isArray(items)) return [];
-    const result = [], seen = new Set();
-    for (const item of items.slice(0, 20)) {
-      if (!item || typeof item.title !== "string" || !item.title.trim() || typeof item.url !== "string" || item.url.length > 2000) continue;
-      try {
-        const url = new URL(item.url);
-        if (url.protocol !== "https:" || !["www.ebay.com", "ebay.com"].includes(url.hostname) || url.username || url.password || url.port || !url.pathname.startsWith("/itm/")) continue;
-        url.search = ""; url.hash = "";
-        if (seen.has(url.href)) continue;
-        seen.add(url.href);
-        result.push({title: item.title.trim().slice(0, 250), url: url.href});
-      } catch (_) { /* Ignore malformed or unsafe links; keep useful keyword data. */ }
-    }
-    return result;
-  }
   /* ---- Messages in plain words (SPEC 4.4) ----
      One table for every error kind the app shows. The server's own text is
      already plain and is preferred (see plainError); this table covers older
      servers, failures found in the browser, and the one-line step notes.
      fix: the button that solves it, "ai" (Set up AI), "aiSettings" (Set up AI, straight to
-     Settings › AI, where the switches are) or "ebay" (Open Settings). note: a short form of
+     Settings › AI, where the switches are). note: a short form of
      text for the line a failed step keeps (errorNote). */
   const SAVE_FAILED = "Marteloio couldn't save this. Check that its folder isn't read-only or full, then try again.";
   const ERROR_MESSAGES = Object.freeze({
@@ -424,23 +363,7 @@
       note: "Couldn't write the listing: Marteloio is already writing three things."},
     notes_too_long: {text: "These notes are too long for one listing (over 40,000 characters). Shorten them and try again.",
       note: "Couldn't write the listing: the notes are over 40,000 characters."},
-    ebay_not_configured: {fix: "ebay", text: "Look up needs an eBay key (optional). Add one in Settings › eBay, or just describe the item.",
-      note: "Look up and Find keywords need an eBay key (optional)."},
-    ebay_auth: {fix: "ebay", text: "eBay didn't accept your eBay keys. Check the Client ID and Client Secret in Settings › eBay.",
-      note: "eBay didn't accept your eBay keys."},
-    ebay_storage: {fix: "ebay", text: "Marteloio couldn't read your saved eBay keys. This happens after moving to another PC or Windows account. Enter them again in Settings › eBay.",
-      note: "Marteloio couldn't read your saved eBay keys."},
-    ebay_unavailable: {text: "eBay couldn't be reached. Try again in a minute, or just describe the item.",
-      note: "eBay couldn't be reached. Try again in a minute."},
-    ebay_timeout: {text: "eBay took too long to answer. Try again in a minute, or just describe the item.",
-      note: "eBay took too long to answer. Try again in a minute."},
-    ebay_busy: {text: "Marteloio is already looking up several items. Wait a moment, then try again.",
-      note: "Marteloio is already looking up several items. Try again in a moment."},
-    ebay_listing_gone: {text: "This listing is no longer on eBay. Pick another one."},
-    ebay_no_details: {text: "This listing has no product details Marteloio can use. Pick another one, or just describe the item."},
-    invalid_barcode: {text: "Check the barcode: it should have 8, 12, 13 or 14 digits."},
     provider_storage_write: {text: SAVE_FAILED},
-    ebay_storage_write: {text: SAVE_FAILED},
     unknown_key: {text: "Marteloio doesn't recognise this key. Copy the whole key from Google AI Studio, Groq, OpenRouter or FreeLLMAPI, then paste it again."},
     invalid_key: {text: "This key looks incomplete. Copy the whole key, then paste it again."},
     invalid_url: {text: "Use the FreeLLMAPI address from this computer or your home network. It starts with http://."},
@@ -654,9 +577,7 @@
      button beside the label; button tips show on hover and keyboard focus. */
   const GUIDE_TIPS = Object.freeze({
     startHere: {title: "Start here", text: "Start here: type what you're selling, like “Canon AE-1 camera”. This marker goes once you type."},
-    product: {title: "Product name or model", text: "The make and model buyers search for. Used in the title and by Look up."},
-    lookup: {title: "Look up", text: "Optional. Finds other sellers' eBay listings for this product so you can borrow their specs. Needs a free eBay developer key (Settings › eBay). You can skip it."},
-    keywords: {title: "Find keywords", text: "Optional. Shows the words other sellers put in their titles. Needs the same eBay key."},
+    product: {title: "Product name or model", text: "The make and model buyers search for. Used in the title. Search eBay opens eBay's own search for it in your browser."},
     describe: {title: "Describe the item", text: "Write it the way you'd tell a friend: what it is, what you tested, what's wrong with it. The AI never adds flaws or claims you didn't write."},
     included: {title: "What's included", text: "Type one thing, then press Enter or a comma: charger, box, manual."},
     condition: {title: "Condition", text: "Pick only what you've checked. Untested stays untested. EUC, VGUC and GUC mean excellent, very good and good used condition."},
@@ -674,7 +595,7 @@
   });
   // The six tour stops, in order (the targets live in index.html).
   const TOUR_STOPS = Object.freeze([
-    {id: "start", title: "Start here", text: "Type what you're selling, like “Canon AE-1 camera”. Look up and Find keywords next to it are optional."},
+    {id: "start", title: "Start here", text: "Type what you're selling, like “Canon AE-1 camera”. Search eBay next to it shows how other sellers list it."},
     {id: "describe", title: "Describe the item", text: "Write it the way you'd tell a friend: what it is, what you tested, what's wrong with it."},
     {id: "condition", title: "Condition", text: "Pick only what you've checked. Untested stays untested."},
     {id: "generate", title: "Generate listing", text: "Writes the title and description from your notes, usually in 10–30 seconds."},
@@ -682,7 +603,7 @@
     {id: "copy", title: "Copy into eBay", text: "In eBay's listing form, switch the description box to HTML (the < > button), paste, then check the preview."}
   ].map(Object.freeze));
 
-  const api = {LIMITS, normalizeCandidates, normalizeSourcedReference, canonicalTitle, normalizeBarcode, normalizeListing, normalizeReference, conditionLabels, conditionClass, applySellerCondition, applySellerBrands, linkBundleCards, bundleBrandSummary, detectBrand, parseBundleItems, splitListItems, findContactDetail, memberSinceText, positivePercent, titleKeywords, normalizeSearchSources,
+  const api = {LIMITS, canonicalTitle, normalizeBarcode, normalizeListing, conditionLabels, conditionClass, applySellerCondition, applySellerBrands, linkBundleCards, bundleBrandSummary, detectBrand, parseBundleItems, splitListItems, findContactDetail, memberSinceText, positivePercent,
     ERROR_MESSAGES, hasJargon, isPlainMessage, plainError, errorNote, errorFix, AI_LABELS, cleanPastedKey, recognizeKey, TOAST_TIMES, toastLife,
     GUIDE_DEFAULTS, normalizeGuide, serviceConnected, aiConnected, aiServiceState, firstRunPlan, guideMode, setupSteps, aiPill, placeFloating, GUIDE_TIPS, TOUR_STOPS};
   if (typeof module !== "undefined" && module.exports) module.exports = api;

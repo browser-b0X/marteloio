@@ -12,13 +12,12 @@ as they appear in the app.
 - [Settings](#settings)
 - [Describing an item](#describing-an-item)
 - [Bundles and lots](#bundles-and-lots)
-- [References and keyword suggestions](#references-and-keyword-suggestions)
+- [Search eBay](#search-ebay)
 - [Reviewing and editing the listing](#reviewing-and-editing-the-listing)
 - [Templates and fewer AI requests](#templates-and-fewer-ai-requests)
 - [Drafts, history and backups](#drafts-history-and-backups)
 - [Where your data lives](#where-your-data-lives)
 - [Keys and credential storage](#keys-and-credential-storage)
-- [Adding eBay keys](#adding-ebay-keys)
 - [How AI services are chosen](#how-ai-services-are-chosen)
 - [Moving from the ZIP version](#moving-from-the-zip-version)
 - [Updating](#updating)
@@ -109,8 +108,7 @@ it into eBay.", and after your first **Copy HTML** or **Download HTML** it hides
 - An (i) beside a field opens a short tip: Product name or model, Describe the item, What's
   included, Condition, Brand and Condition notes. Esc closes it.
 - The main buttons show a tip when you point at them or reach them with the keyboard, for
-  example **Look up**, **Find keywords**, **New listing**, **Generate listing**, **Copy HTML** and
-  **Regenerate…**.
+  example **New listing**, **Generate listing**, **Copy HTML** and **Regenerate…**.
 - A **Start here** marker sits beside Product name or model until you start typing.
 - After your first **Copy HTML**, a message explains how to paste it into eBay.
 
@@ -227,8 +225,6 @@ it: **Set up AI** or **Open Settings**.
   Positive % and Member since. They build the seller header at the top of each listing and are
   kept in this browser. eBay blocks pictures from other websites in descriptions, so upload
   your logo in any eBay listing draft and paste its `i.ebayimg.com` address.
-- **eBay (optional)**: only needed for Look up and Find keywords; see
-  [Adding eBay keys](#adding-ebay-keys).
 - **About**: the Version and Build (useful in bug reports), the Data folder with **Copy**, links
   to the **User guide**, **Report a problem** and the **License**, and **Quit Marteloio**. Quit
   stops Marteloio on this computer; your drafts stay saved in this browser. The page then says
@@ -282,39 +278,21 @@ If conditions differ between items, tick **Conditions vary across items** so no 
 rating is implied; the listing updates straight away. Each item keeps its own condition and
 brand when you add or delete cards later.
 
-## References and keyword suggestions
+## Search eBay
 
-**Look up** and **Find keywords** are optional. They need free eBay developer keys; without
-them Marteloio says so and you can just describe the item.
+**Search eBay**, beside the product name, opens eBay's own search in your browser, so you
+can see how other sellers title and describe the same item. It searches the product name,
+or the barcode under **More options** when one is entered (8, 12, 13 or 14 digits; spaces
+and hyphens are removed, leading zeros kept). The line under the product name says which
+one it will search. A barcode that isn't valid is marked at its field and not searched.
 
-**Look up** searches other sellers' eBay listings by product name, or by the barcode
-under **More options** when one is entered (8, 12, 13 or 14 digits; spaces and hyphens
-are removed, leading zeros kept). If a barcode is entered while More options is folded,
-Marteloio opens it and asks first, so it never searches a barcode you can't see. Results open
-as a collapsible list with its own scrollbar.
+It is a plain link. Marteloio asks eBay for nothing, needs no eBay keys and fills nothing
+in: what you find on eBay you type into your own notes, checked against the item in your
+hands. Each bundle card has the same link for its own item name.
 
-1. Choose **Review specifications** on a result to see the specifications that seller
-   listed, with the source link and retrieval time.
-2. Choose **Accept reference** to use it, or **Dismiss**.
-
-Accepting never fills in or changes your notes, brand, condition, accessories, flaws or
-policies. The reference reaches the AI as a separately labelled block, not as your own
-facts. The list then folds to one line naming the accepted listing, with **Remove
-reference**; reopening it shows the accepted listing first. Choosing another result
-replaces the reference and needs accepting again; renaming the item or changing its
-barcode clears it. Bundle cards have the same **Lookup details** flow.
-
-Only product identifiers and technical attributes are retrieved. Descriptions,
-condition, included items and seller policies are left out. An empty or failed search
-never falls back to AI guesses. These are other sellers' claims: check variants and
-specifications against the item in your hands.
-
-**Find keywords** collects the words other sellers use in their listing titles. Expand
-**Keywords from other sellers** to see the source listings. They are suggestions, not
-search-volume data or facts about your item, and the AI is told so.
-
-See [Adding eBay keys](#adding-ebay-keys) for the keys. Editing the product name or barcode
-cancels searches still in progress.
+Versions up to 0.3.0 had **Look up** and **Find keywords** here. They were removed in 0.4.0.
+A draft saved with a reference or keyword chips opens without them, with a note the first
+time; your notes and listing are unchanged.
 
 ## Reviewing and editing the listing
 
@@ -376,7 +354,7 @@ Marteloio opens `http://localhost:8080`. Clearing browser data removes them.
   nothing is replaced. Each listing appears there once.
 - **Duplicate** saves a copy to history and keeps you editing.
 - **Back up draft** downloads a JSON file with the notes, editable listing, pending edits,
-  references and saved HTML. Keys and seller account preferences are excluded. The file
+  and saved HTML. Keys and seller account preferences are excluded. The file
   is not encrypted.
 - **Restore draft file** accepts these backups up to 2 MB and saves your current work to
   Recent drafts first. Invalid files leave the current draft untouched. A file whose HTML was
@@ -392,7 +370,7 @@ listings.
 | What | Installed with Marteloio-Setup.exe | ZIP or source copy |
 | --- | --- | --- |
 | The program | `%LOCALAPPDATA%\Programs\Marteloio`, replaced by every update | The folder you unzipped or cloned |
-| AI and eBay keys | `.marteloio-secrets.enc` in `%LOCALAPPDATA%\Marteloio` | `.marteloio-secrets.enc` in that folder on Windows; `.env` in plain text on macOS and Linux |
+| AI keys | `.marteloio-secrets.enc` in `%LOCALAPPDATA%\Marteloio` | `.marteloio-secrets.enc` in that folder on Windows; `.env` in plain text on macOS and Linux |
 | Use switches | `settings.json` in `%LOCALAPPDATA%\Marteloio` | `settings.json` in that folder |
 | Log | `relay.log` in `%LOCALAPPDATA%\Marteloio` | `relay.log` in that folder |
 | Optional `.env` (for example `PORT`) | `%LOCALAPPDATA%\Marteloio\.env` | `.env` in that folder |
@@ -420,29 +398,17 @@ keeps your data in the program folder and ignores a `.env` there. When `relay.lo
 - Version 0.2.0 and earlier could sign in to your eBay account. From 0.3.0 Marteloio no
   longer does, and the first time it starts it deletes the saved sign-in (from the encrypted
   store, or `.ebay_token.json` without DPAPI) and the RuName kept in the browser.
+- Version 0.3.0 and earlier kept eBay developer keys for Look up and Find keywords. Those
+  features are gone, and the first time 0.4.0 starts it deletes the saved eBay keys (from the
+  encrypted store, or the `EBAY_CLIENT_ID` and `EBAY_CLIENT_SECRET` lines of `.env` without
+  DPAPI). Your AI keys are not touched.
 - To replace an AI key, paste the new one; to delete it, use **Remove** on its line in
-  Settings › AI. For eBay keys, leave a box empty to keep what's saved.
+  Settings › AI.
 
 Outbound requests never follow redirects, so a key can't be forwarded to an unexpected
-address, and responses larger than 4 MB are refused. Each key is sent only to its own
+address, and responses larger than 2 MB are refused. Each key is sent only to its own
 service, and FreeLLMAPI's address must be on this computer or your home network. Errors from
 AI services are kept with keys redacted and are not shown in the browser.
-
-## Adding eBay keys
-
-eBay keys are optional. They are only used by **Look up** and **Find keywords**, which search
-other sellers' listings.
-
-1. Create a free account at [eBay Developers](https://developer.ebay.com/) and an
-   application with production keys.
-2. In Settings › eBay, enter the Client ID and Client Secret and choose **Save eBay keys**.
-   Look up and Find keywords now work.
-
-Marteloio uses these keys for searches only. It never signs in to your eBay account, so it
-can't read your feedback numbers: copy your feedback score, positive % and member-since year
-from your eBay profile page into Settings › Your shop if you want them in the seller header.
-From a found listing it keeps the title, the link and the product details you accept, and
-nothing about its seller.
 
 ## How AI services are chosen
 
@@ -480,8 +446,7 @@ this. Both use the address `http://localhost:8080`, so only one can run at a tim
 3. Bring your keys: copy `.marteloio-secrets.enc` from the old folder into
    `%LOCALAPPDATA%\Marteloio` (type that into the File Explorer address bar), then reload the
    Marteloio page. This works for the same Windows account on the same PC. If you had typed
-   keys into a `.env` file, copy it too. Or simply paste your keys again in Settings › AI and
-   Settings › eBay.
+   keys into a `.env` file, copy it too. Or simply paste your keys again in Settings › AI.
 4. Your drafts, templates and shop details are already there: they live in your browser at
    the same address.
 5. When everything works, run `create-shortcuts.bat /remove` in the old folder (it only removes
@@ -526,14 +491,14 @@ the log.
 | "Marteloio couldn't start because another program is using port 8080." | Close that program, then open Marteloio again. Marteloio never stops a program just because it uses the port. To use another port, put `PORT=8081` in a file named `.env` in the data folder; drafts saved at the old address stay there. |
 | The app doesn't start from source | Read `relay.log`. Check that Python 3.10 or newer is installed and the port is free. |
 | **Set up AI** stays on, or "Connect an AI service first." | Paste a key in Settings › AI, or follow the steps to get a free Google key. |
-| "Marteloio couldn't read your saved keys." | This happens after moving to another PC or Windows account. Paste your keys again in Settings › AI (and Settings › eBay). The unreadable file is kept under a new name, not deleted. |
+| "Marteloio couldn't read your saved keys." | This happens after moving to another PC or Windows account. Paste your keys again in Settings › AI. The unreadable file is kept under a new name, not deleted. |
 | "… didn't accept this key." or **Key rejected** | Copy the whole key again and paste it. Check on the service's own site that the key still exists. |
 | "The AI services are busy right now." | Wait as the message says, or add another service's key. Your draft is kept. |
 | "FreeLLMAPI isn't running on this computer." | Start FreeLLMAPI, then choose **Test again** (or **Find it again**) in Settings › AI. |
 | "FreeLLMAPI is running but has no AI services yet." | Add a key on FreeLLMAPI's Keys page, then choose **Test again**. |
 | "Marteloio was started again. Reload this page, then try again." | Marteloio restarted, for example after an update. Reload the page. |
 | "Marteloio isn't responding." | Open Marteloio again from the Start menu, then reload the page. |
-| Look up or Find keywords doesn't work | They are optional and need eBay keys in Settings › eBay. You can still generate from your own notes. |
+| Look up and Find keywords are gone | They were removed in 0.4.0. Use **Search eBay** beside the product name to see how other sellers list the item. |
 | A shortcut does nothing (ZIP copy) | The folder was probably moved or renamed. Run `create-shortcuts.bat` again from its new place. |
 | Drafts disappeared | Check you opened the same address (`http://localhost:8080`) and browser profile. Restore from a draft backup if you have one. |
 

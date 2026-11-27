@@ -70,10 +70,8 @@ one-minute tour. Next time, open Marteloio from the Start menu or the desktop.
 - **Bundles that fill themselves in.** Describe a lot once; each line or bullet becomes
   an item card and a What's included chip, without an AI request. Filled cards fold
   to a single line, and the brands of the items are collected for you.
-- **Real specifications, only when you accept them.** Look up other sellers' eBay
-  listings by name or barcode, review the specifications they list, and accept one
-  as a clearly labelled reference. Find keywords shows the words other sellers use
-  in their titles. Both are optional and need free eBay developer keys.
+- **See how others list it.** Search eBay opens eBay's own search for your product name or
+  barcode in your browser. Nothing is filled in for you, and no eBay keys are needed.
 - **Fewer AI requests.** Save a listing as a template and start similar items from
   it with no request at all. Regenerate rewrites just the title, description or
   highlights with a short request.
@@ -150,12 +148,15 @@ is skipped until it is ready again, and a key that was turned down stays off unt
 replace it. Each service has a **Use** switch to skip it without removing its key. The AI
 button in the header says **Set up AI** until a service is connected, then **AI ready**.
 
-## Optional eBay keys
+## No eBay keys
 
-**Look up** and **Find keywords** search other sellers' eBay listings through eBay's
-Browse API. They need application keys from a free
-[eBay Developers](https://developer.ebay.com/) account, entered in Settings › eBay.
-Everything else works without eBay keys.
+Marteloio asks eBay for nothing and needs no eBay developer account. **Search eBay**, beside
+the product name, is a plain link: your browser opens eBay's search page for the name, or
+for the barcode when one is set.
+
+Versions up to 0.3.0 had Look up and Find keywords, which needed eBay developer keys. They
+were removed in 0.4.0; eBay keys saved by an older version are deleted the first time 0.4.0
+starts.
 
 Marteloio never signs in to your eBay account and reads nothing from it. If you want your
 feedback score, positive % and member-since year in the listing's seller header, type them
@@ -188,7 +189,7 @@ There is no Marteloio account or server.
 
 | What | Installed with Marteloio-Setup.exe | ZIP or source copy |
 | --- | --- | --- |
-| AI and eBay keys | `%LOCALAPPDATA%\Marteloio\.marteloio-secrets.enc` | `.marteloio-secrets.enc` in the Marteloio folder (Windows), or `.env` in plain text (macOS, Linux) |
+| AI keys | `%LOCALAPPDATA%\Marteloio\.marteloio-secrets.enc` | `.marteloio-secrets.enc` in the Marteloio folder (Windows), or `.env` in plain text (macOS, Linux) |
 | Settings and log | `settings.json` and `relay.log` in `%LOCALAPPDATA%\Marteloio` | The same files in the Marteloio folder |
 | Drafts, Recent drafts, templates, shop details | Your browser, for `http://localhost:8080` | The same |
 
@@ -205,15 +206,14 @@ There is no Marteloio account or server.
 Marteloio is local-first, not offline:
 
 - **Generate** and **Regenerate** send the item details you entered (notes, brand,
-  condition, included items, bundle items), keyword suggestions and any accepted
-  reference to the AI service whose key you added; Regenerate also sends the current
-  title. Seller details and statistics are not sent. If that service is unavailable,
+  condition, included items, bundle items) to the AI service whose key you added;
+  Regenerate also sends the current title. Seller details and statistics are not sent. If that service is unavailable,
   the same request may go to the next one. With FreeLLMAPI, the request goes to
   FreeLLMAPI on your PC or home network, which passes it to the services you set up there.
 - **Testing a key** sends one tiny request to that service.
-- **Look up** and **Find keywords** send the product name or barcode to eBay.
-- Nothing else contacts eBay. Marteloio doesn't sign in to your eBay account, and it keeps
-  only a found listing's title, link and product details, nothing about its seller.
+- Marteloio itself never contacts eBay. **Search eBay** is a link: your own browser opens
+  eBay's search page with the product name or barcode in its address, as if you had typed
+  it there.
 - Looking for FreeLLMAPI (in the welcome setup and Settings › AI) only checks this computer.
 - The app loads no remote fonts, scripts or analytics. Images you add to a listing
   by web address (such as a store logo) are fetched by your browser.
@@ -238,7 +238,7 @@ shortcuts, and delete the folder.
 | The browser doesn't open | Open `http://localhost:8080` yourself. If Marteloio says it is taking longer than usual, wait a minute and open it again; `relay.log` in the data folder says why. |
 | "Another copy of Marteloio is already running from a different folder" | Stop the other copy (often the ZIP version: `stop.bat` in its folder), then open Marteloio again. |
 | Another program is using port 8080 | Close that program, then open Marteloio again. Marteloio never stops software it didn't start. |
-| "Marteloio couldn't read your saved keys" | This happens after moving to another PC or Windows account. Paste your keys again in Settings › AI (and Settings › eBay). |
+| "Marteloio couldn't read your saved keys" | This happens after moving to another PC or Windows account. Paste your keys again in Settings › AI. |
 | The AI services are busy | Wait as the message says, or add a second service. Your draft is kept. |
 | FreeLLMAPI isn't found or has no AI services yet | Start FreeLLMAPI and add a key on its Keys page, then choose **Find it again** or **Test again** in Settings › AI. |
 
@@ -247,15 +247,13 @@ More in the [user guide](docs/GUIDE.md#troubleshooting).
 ## How it's built
 
 Marteloio is a local web app: a small Python relay on your computer serves the page you use in
-your browser and passes its requests on to your AI service and, if you add eBay keys, to eBay's
-listing search.
+your browser and passes its requests on to your AI service.
 
 | Part | Built with |
 | --- | --- |
 | Interface | One HTML page with plain JavaScript and CSS, no framework, and the Manrope and Space Grotesk fonts |
 | Local relay | Python's standard library only; on Windows your keys are encrypted with Windows' own data protection (DPAPI) |
 | AI writing | Free keys for Google Gemini, Groq or OpenRouter, or a FreeLLMAPI server, tried in order |
-| eBay (optional) | eBay's Browse API for Look up and Find keywords, with application keys only |
 | Installer | Inno Setup with the official embeddable Python, built by GitHub Actions for each release |
 | Checks | Offline Python and Node tests with made-up data, run in GitHub Actions on Windows and Linux, and a browser check run by hand |
 
@@ -269,7 +267,7 @@ is credited as a co-author on the commits.
 | File | Purpose |
 | --- | --- |
 | `index.html` | The interface, state, requests and listing templates |
-| `listing-core.js` | Shared normalization, condition, keyword, bundle, message and first-run helpers |
+| `listing-core.js` | Shared normalization, condition, bundle, message and first-run helpers |
 | `server.py` | Local relay: AI and eBay requests, settings and encrypted key storage |
 | `ai_providers.py` | AI service order, fallback, rate-limit handling, FreeLLMAPI and model retirement |
 | `app_paths.py` | Where the code and data live, the version and the build id |

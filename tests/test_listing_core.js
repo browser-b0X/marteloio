@@ -1,6 +1,6 @@
 // Offline response-validation checks; no providers or browser dependencies.
 const assert = require('node:assert/strict');
-const {normalizeListing, normalizeReference, applySellerCondition, conditionLabels, conditionClass, titleKeywords} = require('../listing-core.js');
+const {normalizeListing, applySellerCondition, conditionLabels, conditionClass} = require('../listing-core.js');
 let passed = 0;
 function check(label, fn) { fn(); passed++; console.log('PASS: ' + label); }
 const listing = overrides => ({title: 'Valid item', description_paragraphs: ['Description'], ...overrides});
@@ -10,43 +10,6 @@ check('blank descriptions rejected', () => {
 });
 check('blank optional entries removed', () => {
   assert.deepEqual(normalizeListing(listing({keywords: [' ', ' camera ']})).keywords, ['camera']);
-});
-check('malformed references rejected', () => {
-  for (const value of [null, [], 12, 'item', {}, {product_name: ' '}, {brand: 'Brand'}])
-    assert.throws(() => normalizeReference(value));
-});
-check('reference fields must be text', () => {
-  for (const field of ['product_name', 'brand', 'release_year', 'summary'])
-    for (const invalid of [123, {}, [], true])
-      assert.throws(() => normalizeReference({product_name: 'Camera', [field]: invalid}));
-});
-check('reference specs must be bounded text maps', () => {
-  for (const key_specs of ['abc', [], {spec: {}}, {' ': 'value'}, Object.fromEntries(Array.from({length: 31}, (_, i) => [i, 'value']))])
-    assert.throws(() => normalizeReference({product_name: 'Camera', key_specs}));
-});
-check('valid partial references accepted and unknown fields removed', () => {
-  const result = normalizeReference({summary: ' A camera. ', unexpected: 'ignored'});
-  assert.equal(result.summary, 'A camera.');
-  assert.deepEqual(result.key_specs, {});
-  assert.equal(result.unexpected, undefined);
-});
-check('reference lengths bounded', () => {
-  const result = normalizeReference({product_name: 'a'.repeat(900), summary: 'b'.repeat(5000), key_specs: {spec: 'c'.repeat(2000)}});
-  assert.equal(result.product_name.length, 300);
-  assert.equal(result.summary.length, 4000);
-  assert.equal(result.key_specs.spec.length, 1000);
-});
-check('normalized key collisions rejected clearly', () => {
-  const map = {['a'.repeat(100) + 'x']: 'first', ['a'.repeat(100) + 'y']: 'second'};
-  assert.throws(() => normalizeListing(listing({item_specifics: map})), /Invalid item specifics entry/);
-  assert.throws(() => normalizeReference({product_name: 'Camera', key_specs: map}), /Invalid reference specs entry/);
-});
-check('prototype-like keys remain harmless own values', () => {
-  const map = JSON.parse('{"__proto__":"text","constructor":"text"}');
-  const result = normalizeReference({product_name: 'Camera', key_specs: map});
-  assert.equal(Object.getPrototypeOf(result.key_specs), Object.prototype);
-  assert.equal(result.key_specs.__proto__, 'text');
-  assert.equal({}.polluted, undefined);
 });
 check('seller condition always overrides model grade and condition prose', () => {
   for (const condition of Object.keys(conditionLabels)) {
@@ -158,52 +121,6 @@ check('a note that is only a label yields an empty note', () => {
   for (const text of ['NOTE', 'please note:', '  Please note  '])
     assert.equal(normalizeListing(listing({note:text})).note, '');
 });
-check('mined keywords preserve model punctuation and short identifiers', () => {
-  const result = titleKeywords([{title:'Sony WH-1000XM5 A7 EF-S 18-55mm f/2.8 for camera'}], new Set(['for']));
-  for (const token of ['wh-1000xm5','a7','ef-s','18-55mm','f/2.8']) assert.ok(result.includes(token));
-  assert.ok(!result.includes('for') && !result.includes('wh'));
-});
-check('keyword frequency counts titles rather than repetition within one title', () => {
-  assert.deepEqual(titleKeywords([{title:'spam spam spam camera'}, {title:'camera lens'}], new Set(), 2), ['camera','spam']);
-});
-check('search sources retain only bounded eBay item links without tracking', () => {
-  const normalize = require('../listing-core.js').normalizeSearchSources;
-  assert.deepEqual(normalize([
-    {title:'  Camera  ', url:'https://www.ebay.com/itm/123?tracking=value#details'},
-    {title:'Duplicate', url:'https://www.ebay.com/itm/123'},
-    {title:'Unsafe', url:'javascript:alert(1)'},
-    {title:'Impostor', url:'https://www.ebay.com.evil.test/itm/1'},
-    {title:'Credentials', url:'https://user:pass@www.ebay.com/itm/1'},
-    {title:'HTTP', url:'http://www.ebay.com/itm/1'},
-    {title:'Non-item', url:'https://www.ebay.com/signin'},
-    {title:{bad:true}, url:'https://www.ebay.com/itm/456'},
-  ]), [{title:'Camera', url:'https://www.ebay.com/itm/123'}]);
-  assert.deepEqual(normalize(null), []);
-  assert.equal(normalize(Array.from({length:30}, (_, i) => ({title:'x'.repeat(300),url:'https://www.ebay.com/itm/'+i}))).length, 20);
-});
-check('barcodes preserve leading zeros and reject non-barcode input', () => {
-  const normalize = require('../listing-core.js').normalizeBarcode;
-  assert.equal(normalize('0 12345-678905'), '012345678905');
-  for (const value of ['12345678', '012345678905', '0012345678901', '00123456789012']) assert.equal(normalize(value), value);
-  assert.equal(normalize('   '), '');
-  for (const value of ['-', '123', '123456789', '１２３４５６７８', '01234567890x', 12345678, '0'.repeat(33)]) assert.throws(() => normalize(value));
-});
-
-
-check('source references require provenance and omit seller fields on restore', () => {
-  const {normalizeSourcedReference, normalizeCandidates} = require('../listing-core.js');
-  const source = {item_id:'v1|123|0', title:'Camera', url:'https://www.ebay.com/itm/123?track=x'};
-  const ref = {kind:'ebay-listing', source, at:'2026-09-10T12:00:00Z', accepted:true,
-    data:{product_name:'Untrusted seller title', summary:'Includes accessories', key_specs:{Model:'A1',Condition:'New',Shipping:'Free'}}};
-  const normalized = normalizeSourcedReference(ref);
-  assert.deepEqual(normalized.data, {product_name:'',key_specs:{Model:'A1'}});
-  assert.equal(normalized.source.url, 'https://www.ebay.com/itm/123');
-  assert.equal(normalized.accepted, true);
-  for (const bad of [{...ref,kind:'ai'}, {...ref,at:''}, {...ref,source:{...source,url:'https://evil.test/itm/123'}}, {...ref,source:{...source,item_id:'../123'}}])
-    assert.throws(() => normalizeSourcedReference(bad));
-  assert.deepEqual(normalizeCandidates([{...source,item_id:'../123'}, {...source,url:'javascript:alert(1)'}]), []);
-});
-
 /* ---- bundle description parser, brands ---- */
 check('bundle parser makes one item per line, never splitting commas, semicolons, plus or ampersand', () => {
   const {parseBundleItems} = require('../listing-core.js');
@@ -377,8 +294,7 @@ check('seller header: positive percentage strips a typed % and stays within 0 to
 check('messages: every error kind has plain words, and the fixable ones name their fix', () => {
   const {ERROR_MESSAGES, hasJargon, errorFix} = require('../listing-core.js');
   const kinds = ['no_provider', 'provider_busy', 'provider_auth', 'provider_timeout', 'provider_request', 'provider_storage', 'local_busy',
-    'notes_too_long', 'ebay_not_configured', 'ebay_auth', 'ebay_unavailable', 'ebay_listing_gone', 'invalid_barcode', 'ebay_busy',
-    'ebay_storage', 'ebay_no_details', 'ebay_storage_write', 'provider_storage_write',
+    'notes_too_long', 'provider_storage_write',
     'invalid_request', 'not_found', 'forbidden', 'session_expired', 'server_error', 'unknown_key', 'invalid_key', 'invalid_url', 'nothing_to_save'];
   for (const kind of kinds) assert.ok(ERROR_MESSAGES[kind], kind);
   for (const [kind, entry] of Object.entries(ERROR_MESSAGES)) {
@@ -388,30 +304,26 @@ check('messages: every error kind has plain words, and the fixable ones name the
     }
   }
   assert.deepEqual(['no_provider', 'provider_auth', 'provider_storage'].map(errorFix), ['ai', 'ai', 'ai']);
-  assert.deepEqual(['ebay_not_configured', 'ebay_auth', 'ebay_storage'].map(errorFix), ['ebay', 'ebay', 'ebay']);
   for (const gone of ['ebay_not_connected', 'ebay_connect_failed']) assert.equal(ERROR_MESSAGES[gone], undefined, gone + ' went with the eBay account sign-in (0.3.0)');
-  assert.deepEqual(['provider_busy', 'ebay_unavailable', 'nonsense', '', undefined].map(errorFix), ['', '', '', '', '']);
+  // 0.4.0: Look up and Find keywords are gone, and every eBay error kind with them.
+  assert.deepEqual(Object.keys(ERROR_MESSAGES).filter(kind => /ebay|barcode/.test(kind)), []);
+  assert.deepEqual(['ebay_not_configured', 'ebay_auth', 'ebay_storage', 'provider_busy', 'nonsense', '', undefined].map(errorFix), ['', '', '', '', '', '', '']);
   assert.equal(ERROR_MESSAGES.no_provider.text, 'Connect an AI service first. It takes about 2 minutes with a free Google key.');
-  assert.equal(ERROR_MESSAGES.ebay_not_configured.text, 'Look up needs an eBay key (optional). Add one in Settings › eBay, or just describe the item.');
 });
 check('messages: the server\'s plain text is preferred, technical text is replaced', () => {
   const {plainError, isPlainMessage, errorNote} = require('../listing-core.js');
   const busy = 'The AI services are busy right now. Your draft is safe. Try again in 30 seconds.';
   assert.equal(plainError('provider_busy', busy), busy);
-  assert.equal(plainError('ebay_auth', ' eBay didn\'t accept your eBay keys.\n Check them. '), 'eBay didn\'t accept your eBay keys. Check them.');
+  assert.equal(plainError('provider_auth', ' The AI service didn\'t accept your key.\n Check it. '), 'The AI service didn\'t accept your key. Check it.');
   for (const technical of ['EBAY_CLIENT_ID not set', 'Lookup failed. EBAY_CLIENT_ID not set.', 'eBay search returned HTTP 503. Please retry.',
     'Invalid max_tokens', 'Every configured AI provider is busy.', 'Request body must be a JSON object', 'not found', 'Failed to fetch',
     'Check the AI status and your provider keys in Settings.', 'OAuth exchange failed: token missing.', '', null, 42]) {
     assert.ok(!isPlainMessage(technical), String(technical));
   }
-  assert.equal(plainError('ebay_not_configured', 'EBAY_CLIENT_ID not set'),
-    'Look up needs an eBay key (optional). Add one in Settings › eBay, or just describe the item.');
-  assert.equal(plainError('', 'eBay search returned HTTP 503. Please retry.', 'ebay_unavailable'),
-    'eBay couldn\'t be reached. Try again in a minute, or just describe the item.');
+  // A kind this version no longer knows (an older server's eBay error) falls back to the general message.
+  assert.equal(plainError('ebay_not_configured', 'EBAY_CLIENT_ID not set'), 'Marteloio couldn\'t finish this. Try again in a minute.');
   assert.equal(plainError('mystery', undefined), 'Marteloio couldn\'t finish this. Try again in a minute.');
   assert.equal(errorNote('no_provider', 'anything'), 'Couldn\'t write the listing: no AI service is connected yet.');
-  assert.equal(errorNote('ebay_listing_gone', 'This listing is no longer on eBay. Pick another one.', 'Look up didn\'t work'),
-    'Look up didn\'t work. This listing is no longer on eBay. Pick another one.');
 });
 check('AI keys: pasted keys are recognised by their start, without quotes or Bearer', () => {
   const {recognizeKey, cleanPastedKey} = require('../listing-core.js');
@@ -511,9 +423,11 @@ check('first run: a tip, tooltip or tour card is never cut off (flip and shift)'
 });
 check('first run: the approved tip and tour texts, in plain words', () => {
   const {GUIDE_TIPS, TOUR_STOPS, hasJargon} = require('../listing-core.js');
-  assert.deepEqual(Object.keys(GUIDE_TIPS), ['startHere', 'product', 'lookup', 'keywords', 'describe', 'included', 'condition', 'conditionNotes', 'brand',
+  assert.deepEqual(Object.keys(GUIDE_TIPS), ['startHere', 'product', 'describe', 'included', 'condition', 'conditionNotes', 'brand',
     'bundle', 'newListing', 'generate', 'copyHtml', 'regenerate', 'editContent', 'shuffle', 'drafts', 'aiStatus']);
-  assert.equal(GUIDE_TIPS.lookup.text, 'Optional. Finds other sellers\' eBay listings for this product so you can borrow their specs. Needs a free eBay developer key (Settings › eBay). You can skip it.');
+  assert.equal(GUIDE_TIPS.product.text, 'The make and model buyers search for. Used in the title. Search eBay opens eBay\'s own search for it in your browser.');
+  assert.equal(TOUR_STOPS[0].text, 'Type what you\'re selling, like “Canon AE-1 camera”. Search eBay next to it shows how other sellers list it.');
+  for (const entry of [...Object.values(GUIDE_TIPS), ...TOUR_STOPS]) assert.ok(!/Look up|Find keywords|eBay key/.test(entry.text), entry.text);
   assert.equal(GUIDE_TIPS.copyHtml.text, 'In eBay\'s listing form, switch the description box to HTML (the < > button), paste, then check the preview.');
   assert.equal(GUIDE_TIPS.generate.text, 'Writes the title and description from your notes, usually in 10–30 seconds.');
   assert.deepEqual(TOUR_STOPS.map(stop => stop.title), ['Start here', 'Describe the item', 'Condition', 'Generate listing', 'Review', 'Copy into eBay']);

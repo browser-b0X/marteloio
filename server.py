@@ -1,16 +1,14 @@
 #!/usr/bin/env python3
 """Local relay + static server for Marteloio (eBay listing builder).
 
-Serves index.html on :8080 and proxies eBay API calls, because eBay
-endpoints send no CORS headers and the browser cannot call them directly.
+Serves index.html on :8080, passes listing requests on to the seller's AI service and
+keeps the AI keys. It asks eBay for nothing (0.4.0): Search eBay is a link the browser opens.
 Stdlib only - runs under the uv-managed CPython, no pip installs.
 """
 import json
 import math
 import unicodedata
-from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 import hashlib
-import http.client
 import os
 import secrets
 import socket
@@ -19,9 +17,7 @@ import tempfile
 import socketserver
 import threading
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from base64 import b64decode, b64encode
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -43,7 +39,6 @@ LEGACY_SECRETS_PATH = os.path.join(BASE_DIR, ".lanzalister-secrets.enc")
 PORT = 8080
 SESSION_TOKEN = secrets.token_urlsafe(32)
 MAX_BODY = 128 * 1024
-MAX_UPSTREAM_BODY = 4 * 1024 * 1024
 REJECT_DRAIN_TIMEOUT = 0.25
 APP_ID = hashlib.sha256(os.path.normcase(BASE_DIR).encode()).hexdigest()[:16]
 _ENV_LOCK = threading.RLock()
@@ -88,10 +83,6 @@ def safe_value(value):
     return value.strip()
 
 
-class UpstreamError(ValueError):
-    """An upstream service answered with something unreadable (HTTP 502, fixed text)."""
-
-
 class RequestError(ValueError):
     """A request the app can't serve, with a plain message and a kind for the UI."""
 
@@ -101,34 +92,9 @@ class RequestError(ValueError):
         self.status = status
 
 
-class EbayAuthError(RuntimeError):
-    """eBay's token service turned down the request (HTTP 400/401): usually the keys."""
-
-    def __init__(self, code):
-        super().__init__("eBay rejected the request: HTTP %d" % code)
-        self.code = code
-
-
-UPSTREAM_ERROR_MESSAGE = "eBay sent an answer Marteloio couldn't read. Try again in a minute, or just describe the item."
 SERVER_ERROR_MESSAGE = "Marteloio couldn't finish this. Try again in a minute."
-# Menu paths use the single right-pointing angle quote (U+203A).
-EBAY_MESSAGES = {
-    "ebay_not_configured": "Look up needs an eBay key (optional). Add one in Settings \u203a eBay, or just describe the item.",
-    "ebay_auth": "eBay didn't accept your eBay keys. Check the Client ID and Client Secret in Settings \u203a eBay.",
-    "ebay_unavailable": "eBay couldn't be reached. Try again in a minute, or just describe the item.",
-    "ebay_listing_gone": "This listing is no longer on eBay. Pick another one.",
-    "ebay_busy": "Marteloio is already looking up several items. Wait a moment, then try again.",
-    "ebay_storage": "Marteloio couldn't read your saved eBay keys. This happens after moving to another PC "
-                    "or Windows account. Enter them again in Settings \u203a eBay.",
-}
-EBAY_STATUS = {"ebay_auth": 502, "ebay_unavailable": 502, "ebay_storage": 503}
-INVALID_BARCODE_MESSAGE = "Check the barcode: it should have 8, 12, 13 or 14 digits."
 NOTES_TOO_LONG_MESSAGE = ("These notes are too long for one listing (over 40,000 characters). "
                           "Shorten them and try again.")
-
-
-def ebay_error(kind):
-    return {"error": EBAY_MESSAGES[kind], "kind": kind, "fallback": True}
 
 
 def env_lines(text):
@@ -177,10 +143,6 @@ def provider_failure(reason, retry_after=None):
                      "kind": "provider_timeout"}
     return 502, {"error": "The AI couldn't write this listing. Your draft is safe. Try again; "
                           "if it keeps happening, shorten your notes.", "kind": "provider_request"}
-
-OAUTH_TOKEN_URL = "https://api.ebay.com/identity/v1/oauth2/token"
-BROWSE_URL = "https://api.ebay.com/buy/browse/v1/item_summary/search"
-
 
 def load_env():
     for key, value in app_paths.read_env_file(ENV_PATH).items():
@@ -269,8 +231,9 @@ def dpapi_decrypt(blob_bytes):
 
 # ---------------- encrypted secret store ----------------
 # One DPAPI blob (base64 text) wrapping JSON:
-#   {"v":1, "ebay_client_id":..., "ebay_client_secret":..., provider keys...}
-# A "token" entry is an eBay account sign-in from 0.2.0 or earlier; forget_saved_sign_in removes it.
+#   {"v":1, "provider_keys": {...}}
+# A "token" entry is an eBay account sign-in from 0.2.0 or earlier (forget_saved_sign_in removes it);
+# "ebay_client_id" / "ebay_client_secret" are eBay keys from 0.3.0 or earlier (forget_ebay_keys removes them).
 
 _STORE_LOCK = threading.Lock()
 
@@ -305,9 +268,6 @@ def _store_read_raw(path=None):
 def _check_store(data):
     if not isinstance(data, dict):
         raise ValueError("Invalid credential store structure")
-    for name in ("ebay_client_id", "ebay_client_secret"):
-        if name in data and not isinstance(data[name], str):
-            raise ValueError("Invalid stored eBay credential")
     if data.get("token") is not None and not isinstance(data["token"], dict):
         raise ValueError("Invalid stored token structure")
     try:
@@ -362,7 +322,8 @@ def _store_update(change):
         data, unreadable = _store_read_raw(path), None
     except StoreUnreadable as error:
         data, unreadable = {}, (path, error)
-    data.pop("token", None)  # an eBay account sign-in from 0.2.0 or earlier is never kept
+    for name in ("token",) + OLD_EBAY_KEYS:  # an eBay sign-in (0.2.0) or eBay keys (0.3.0) are never kept
+        data.pop(name, None)
     change(data)
     if not _store_write(data, unreadable):
         raise OSError("Could not verify the encrypted store")
@@ -397,301 +358,6 @@ def save_secrets(data):
             return _store_write(data)
         except Exception:
             return False
-
-
-_ENV_FOR_CRED = {"ebay_client_id": "EBAY_CLIENT_ID",
-                 "ebay_client_secret": "EBAY_CLIENT_SECRET"}
-
-
-def get_ebay_cred(name):
-    val = (load_secrets().get(name) or "").strip()
-    if val:
-        return val
-    return os.environ.get(_ENV_FOR_CRED[name], "").strip()
-
-
-def set_ebay_creds(cid=None, csec=None):
-    if not dpapi_available():
-        return False
-
-    def change(data):
-        if cid:
-            data["ebay_client_id"] = cid
-        if csec:
-            data["ebay_client_secret"] = csec
-    with _STORE_LOCK:
-        try:
-            _store_update(change)
-        except Exception:
-            return False
-    return True
-
-
-def client_id():
-    return get_ebay_cred("ebay_client_id")
-
-
-def client_secret():
-    return get_ebay_cred("ebay_client_secret")
-
-
-class NoCredentialRedirect(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        return None
-
-
-def outbound_request(req, timeout):
-    handlers = [NoCredentialRedirect()]
-    if urllib.parse.urlsplit(req.full_url).hostname in ('127.0.0.1', 'localhost', '::1'):
-        # Local credentials must not be sent through an inherited HTTP proxy.
-        # External eBay requests still respect normal proxy settings.
-        handlers.append(urllib.request.ProxyHandler({}))
-    opener = urllib.request.build_opener(*handlers)
-    with opener.open(req, timeout=timeout) as response:
-        body = response.read(MAX_UPSTREAM_BODY + 1)
-        if len(body) > MAX_UPSTREAM_BODY:
-            raise ValueError("Upstream response exceeded the size limit")
-        return response.status, body.decode('utf-8')
-
-
-def http_post(url, data, headers, timeout=15):
-    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-    return outbound_request(req, timeout)
-
-
-def http_get(url, timeout=15, headers=None):
-    req = urllib.request.Request(url, headers=headers or {})
-    return outbound_request(req, timeout)
-
-
-# ---------------- eBay application token ----------------
-# Marteloio only asks eBay for an application token (client credentials). It never signs
-# in to an eBay account, so there is no user token to keep.
-
-def exchange_grant(body):
-    cid, csec = client_id(), client_secret()
-    if not cid or not csec:
-        return 400, {"error": "EBAY_CLIENT_ID / EBAY_CLIENT_SECRET not set - save them in Settings"}
-    basic = b64encode(("%s:%s" % (cid, csec)).encode()).decode()
-    try:
-        status, text = http_post(OAUTH_TOKEN_URL, urllib.parse.urlencode(body).encode(), {
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Authorization": "Basic " + basic,
-        })
-    except urllib.error.HTTPError as e:
-        code = e.code
-        e.close()
-        if code in (400, 401):
-            raise EbayAuthError(code) from None
-        raise RuntimeError("eBay rejected the request: HTTP %d" % code) from None
-    try:
-        data = json.loads(text)
-    except ValueError:
-        raise UpstreamError("Invalid eBay token response") from None
-    if not isinstance(data, dict):
-        raise UpstreamError("Invalid eBay token response")
-    if "access_token" in data:
-        if not isinstance(data['access_token'], str) or not data['access_token'].strip():
-            raise UpstreamError("Invalid eBay access token")
-        expires = data.get('expires_in')
-        if isinstance(expires, bool) or not isinstance(expires, (int, str)):
-            raise UpstreamError("Invalid eBay token lifetime")
-        try:
-            expires = int(expires)
-        except ValueError:
-            raise UpstreamError("Invalid eBay token lifetime") from None
-        if not 0 < expires <= 2147483647:
-            raise UpstreamError("Invalid eBay token lifetime")
-        data["expires_at"] = time.time() + expires
-    return status, data
-
-
-APP_TOKEN = {"value": None, "expires_at": 0}
-_TOKEN_LOCK = threading.Lock()
-_SEARCH_LOCK = threading.Lock()
-_SEARCH_CACHE = {}
-_SEARCH_PENDING = {}
-_SEARCH_SLOTS = threading.BoundedSemaphore(3)
-_SEARCH_GENERATION = 0
-
-
-def invalidate_search_cache():
-    global _SEARCH_GENERATION
-    with _SEARCH_LOCK:
-        _SEARCH_GENERATION += 1
-        _SEARCH_CACHE.clear()
-
-
-def invalidate_ebay_cache():
-    with _TOKEN_LOCK:
-        APP_TOKEN.update(value=None, expires_at=0)
-    invalidate_search_cache()
-
-
-def app_token_fresh():
-    global APP_TOKEN
-    with _TOKEN_LOCK:
-        if APP_TOKEN["value"] and APP_TOKEN["expires_at"] - 60 > time.time():
-            return APP_TOKEN["value"]
-        _, data = exchange_grant({
-            "grant_type": "client_credentials",
-            "scope": "https://api.ebay.com/oauth/api_scope",
-        })
-        if "access_token" not in data:
-            return None
-        APP_TOKEN = {"value": data["access_token"], "expires_at": data.get("expires_at", 0)}
-        return APP_TOKEN["value"]
-
-
-def normalize_gtin(value):
-    if not isinstance(value, str) or len(value) > 32:
-        raise ValueError("Invalid barcode")
-    code = value.strip().replace(' ', '').replace('-', '')
-    if value.strip() and (len(code) not in (8, 12, 13, 14) or not code.isascii() or not code.isdigit()):
-        raise ValueError("Barcode must contain 8, 12, 13 or 14 digits")
-    return code
-
-
-def browse_search(keywords, limit, gtin=""):
-    token = app_token_fresh()
-    if not token:
-        return ebay_error("ebay_not_configured")  # the Client Secret is missing
-    # Default Browse results already contain titles. Aggregate aspect refinements
-    # are not seller-item facts and are unused by the listing builder.
-    params = {"limit": str(limit)}
-    params.update({'gtin': gtin} if gtin else {'q': keywords})
-    query = urllib.parse.urlencode(params)
-    _, text = http_get(BROWSE_URL + "?" + query, timeout=15,
-                       headers={"Authorization": "Bearer " + token,
-                                "X-EBAY-C-MARKETPLACE-ID": "EBAY_US"})
-    data = json.loads(text)
-    if not isinstance(data, dict) or data.get('errors'):
-        raise ValueError("Invalid eBay search response")
-    raw_items = data.get('itemSummaries', [])
-    if not isinstance(raw_items, list):
-        raise ValueError("Invalid eBay search items")
-    items = []
-    for it in raw_items[:50]:
-        if not isinstance(it, dict) or not isinstance(it.get('title'), str) or not it['title'].strip():
-            continue
-        # Only the listing's title, link and number are kept. Nothing about its seller is.
-        items.append({'title': it['title'].strip()[:300],
-                      'url': it.get('itemWebUrl') if isinstance(it.get('itemWebUrl'), str) else ''})
-        if isinstance(it.get('itemId'), str):
-            items[-1]['item_id'] = it['itemId'][:120]
-        if len(items) >= limit:
-            break
-    if raw_items and not items:
-        raise ValueError("No valid eBay search items in response")
-    return {"items": items, "aspects": {}, "total": len(items),
-            "source": "eBay listing titles", "cached": False}
-
-
-# Only product identifiers and technical attributes, never arbitrary listing text.
-REFERENCE_ASPECTS = {'brand', 'model', 'mpn', 'gtin', 'upc', 'ean', 'isbn',
-    'color', 'colour', 'material', 'type', 'connectivity', 'storage capacity',
-    'screen size', 'processor', 'ram size', 'maximum resolution', 'mount',
-    'focal length', 'maximum aperture', 'compatible brand', 'compatible model'}
-
-
-EBAY_NO_DETAILS_MESSAGE = "This listing has no product details Marteloio can use. Pick another one, or just describe the item."
-
-
-def browse_reference(item_id):
-    import re
-    if not isinstance(item_id, str) or not re.fullmatch(r'v1\|[0-9]{1,20}\|[0-9]{1,20}', item_id):
-        raise RequestError("That eBay listing number isn't valid. Pick a listing from the search results.")
-    token = app_token_fresh()
-    if not token:
-        raise UpstreamError('Could not obtain an eBay application token')
-    status, text = http_get('https://api.ebay.com/buy/browse/v1/item/' + urllib.parse.quote(item_id, safe=''),
-        timeout=15, headers={'Authorization': 'Bearer ' + token, 'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US'})
-    try:
-        data = json.loads(text)
-    except ValueError:
-        raise UpstreamError('Invalid eBay listing response') from None
-    if status != 200 or not isinstance(data, dict) or data.get('errors') or data.get('itemId') != item_id:
-        raise UpstreamError('Could not retrieve the selected eBay listing')
-    title, url = data.get('title'), data.get('itemWebUrl')
-    no_details = RequestError(EBAY_NO_DETAILS_MESSAGE, "ebay_no_details", 422)
-    if not isinstance(title, str) or not title.strip() or not isinstance(url, str):
-        raise no_details
-    link = urllib.parse.urlsplit(url)
-    if link.scheme != 'https' or link.netloc not in ('www.ebay.com', 'ebay.com') or not link.path.startswith('/itm/') or link.path.rstrip('/').split('/')[-1] != item_id.split('|')[1]:
-        raise no_details
-    specs = {}
-    for key in ('brand', 'mpn', 'gtin'):
-        value = data.get(key)
-        if isinstance(value, str) and value.strip():
-            specs[key.upper() if key != 'brand' else 'Brand'] = value.strip()[:1000]
-    aspects = data.get('localizedAspects', [])
-    if not isinstance(aspects, list):
-        raise UpstreamError('Invalid listing specifications')
-    for aspect in aspects[:100]:
-        if not isinstance(aspect, dict):
-            continue
-        name, value = aspect.get('name'), aspect.get('value')
-        if isinstance(name, str) and name.strip().lower() in REFERENCE_ASPECTS and isinstance(value, str) and value.strip():
-            # Prefer explicit identifier fields when an aspect repeats them.
-            if name.strip().lower() not in {k.lower() for k in specs}:
-                specs[name.strip()] = value.strip()[:1000]
-    if not specs:
-        raise no_details
-    return {'kind': 'ebay-listing', 'source': {'item_id': item_id,
-        'title': title.strip()[:300], 'url': urllib.parse.urlunsplit((link.scheme, link.netloc, link.path, '', ''))},
-        'at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
-        'data': {'product_name': '', 'key_specs': specs}}
-
-
-def try_search(keywords, limit, gtin=""):
-    # Share identical work, but do not hold a global lock across network I/O.
-    busy = ebay_error("ebay_busy")
-    with _SEARCH_LOCK:
-        generation = _SEARCH_GENERATION
-        key = (generation, ('gtin', gtin) if gtin else ('q', " ".join(keywords.casefold().split())), limit)
-        cached = _SEARCH_CACHE.get(key)
-        if cached and cached[0] > time.monotonic():
-            return dict(cached[1], cached=True)
-        pending = _SEARCH_PENDING.get(key)
-        owner = pending is None
-        if owner:
-            if len(_SEARCH_PENDING) >= 8:
-                return busy
-            pending = Future()
-            _SEARCH_PENDING[key] = pending
-    if not owner:
-        try:
-            return pending.result(timeout=40)
-        except FutureTimeoutError:
-            return busy
-    result = busy
-    acquired = False
-    try:
-        acquired = _SEARCH_SLOTS.acquire(timeout=1)
-        if not acquired:
-            return result
-        try:
-            result = browse_search('', limit, gtin=gtin) if gtin else browse_search(keywords, limit)
-        except EbayAuthError:
-            result = ebay_error("ebay_auth")
-        except urllib.error.HTTPError as e:
-            # The search itself refused the keyset (no Browse access) or eBay is down.
-            result = ebay_error("ebay_auth" if e.code in (401, 403) else "ebay_unavailable")
-            e.close()
-        except Exception:
-            result = ebay_error("ebay_unavailable")
-        with _SEARCH_LOCK:
-            if result and "error" not in result and generation == _SEARCH_GENERATION:
-                if len(_SEARCH_CACHE) >= 128:
-                    _SEARCH_CACHE.pop(next(iter(_SEARCH_CACHE)))
-                _SEARCH_CACHE[key] = (time.monotonic() + 300, result)
-        return result
-    finally:
-        if acquired:
-            _SEARCH_SLOTS.release()
-        with _SEARCH_LOCK:
-            _SEARCH_PENDING.pop(key, None)
-        pending.set_result(result)
 
 
 # ---------------- LLM key settings ----------------
@@ -766,8 +432,7 @@ def read_env():
 
 
 def write_env(updates):
-    allowed = set(SETTING_KEYS) | {"EBAY_CLIENT_ID", "EBAY_CLIENT_SECRET"}
-    if not set(updates) <= allowed:
+    if not set(updates) <= set(SETTING_KEYS):
         raise ValueError("Unsupported setting")
     updates = {k: safe_value(v) for k, v in updates.items()}
     with _ENV_LOCK:
@@ -859,37 +524,50 @@ def forget_saved_sign_in():
         print("[secrets] removed the eBay account sign-in saved by an older version; Marteloio no longer uses one.")
 
 
-def migrate_secrets():
-    """Move plaintext eBay app keys into the DPAPI store (idempotent)."""
-    if not dpapi_available():
-        print("[secrets] DPAPI unavailable - keeping the plaintext .env fallback.")
-        return
-    env = read_env()
-    cid = env.get("EBAY_CLIENT_ID", "").strip()
-    csec = env.get("EBAY_CLIENT_SECRET", "").strip()
-    if not cid and not csec:
-        return
+OLD_EBAY_KEYS = ("ebay_client_id", "ebay_client_secret")
+OLD_EBAY_ENV = ("EBAY_CLIENT_ID", "EBAY_CLIENT_SECRET")
+
+
+def forget_ebay_keys():
+    """Delete eBay keys saved by version 0.3.0 or earlier (idempotent).
+
+    Look up and Find keywords are gone, so the keys are of no use: they are removed from
+    the encrypted store and from .env. AI keys are untouched. A store that can't be read
+    is left exactly as it is, and a failed write is retried at the next start."""
+    removed = False
+    for name in OLD_EBAY_ENV:
+        os.environ.pop(name, None)
     try:
+        env = read_env()
+        in_env = any(name in env for name in OLD_EBAY_ENV)
+    except OSError:
+        in_env = False
+    if in_env:
+        try:
+            rewrite_env_without(set(OLD_EBAY_ENV))
+            removed = True
+        except OSError as e:
+            print("[secrets] could not remove the old eBay keys from .env; will retry next start: %s" % e)
+    if dpapi_available():
         with _STORE_LOCK:
-            store = _store_read_raw()
-    except Exception:
-        print("[secrets] Existing store unreadable; migration stopped without changing credentials.")
-        return
-    if cid:
-        store["ebay_client_id"] = cid
-    if csec:
-        store["ebay_client_secret"] = csec
-    store.pop("token", None)
-    if not save_secrets(store):
-        print("[secrets] could not encrypt store - leaving plaintext in place, will retry next start.")
-        return
-    try:
-        rewrite_env_without({"EBAY_CLIENT_ID", "EBAY_CLIENT_SECRET"})
-    except OSError as e:
-        print("[secrets] store written but could not strip .env: %s" % e)
-    os.environ.pop("EBAY_CLIENT_ID", None)
-    os.environ.pop("EBAY_CLIENT_SECRET", None)
-    print("[secrets] migrated eBay app keys into the DPAPI-encrypted store.")
+            try:
+                store = _store_read_raw()
+            except Exception:
+                store = None
+                print("[secrets] Existing store unreadable; the old eBay keys, if any, were left as they are.")
+            if store and any(name in store for name in OLD_EBAY_KEYS):
+                for name in OLD_EBAY_KEYS:
+                    store.pop(name, None)
+                try:
+                    written = _store_write(store)
+                except Exception:
+                    written = False
+                if written:
+                    removed = True
+                else:
+                    print("[secrets] could not remove the old eBay keys from the store; will retry next start.")
+    if removed:
+        print("[secrets] removed the eBay keys saved by an older version; Marteloio no longer asks eBay for anything.")
 
 
 def mask_key(value):
@@ -1132,8 +810,6 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             self.route_get()
-        except UpstreamError:
-            self.fail(502, "ebay_unavailable", UPSTREAM_ERROR_MESSAGE)
         except RequestError as e:
             self.fail(e.status, e.kind, str(e))
         except ValueError as e:
@@ -1165,10 +841,6 @@ class Handler(BaseHTTPRequestHandler):
             self.handle_ai_status()
         elif path == "/ai/freellmapi/detect":
             self.handle_freellmapi_detect()
-        elif path == "/ebay/reference":
-            self.handle_reference(urllib.parse.parse_qs(parsed.query).get("item_id", [""])[0])
-        elif path == "/ebay/search":
-            self.handle_search(urllib.parse.parse_qs(parsed.query))
         elif path == "/settings":
             self.handle_settings_get()
         else:
@@ -1179,8 +851,6 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             self.route_post()
-        except UpstreamError:
-            self.fail(502, "ebay_unavailable", UPSTREAM_ERROR_MESSAGE)
         except RequestError as e:
             self.reject_json({"error": str(e), "kind": e.kind}, e.status)
         except ValueError as e:
@@ -1202,8 +872,6 @@ class Handler(BaseHTTPRequestHandler):
             self.handle_completion()
         elif path == "/settings":
             self.handle_settings_post()
-        elif path == "/settings/ebay":
-            self.handle_settings_ebay_post()
         elif path == "/settings/ai":
             self.handle_settings_ai()
         elif path == "/ai/test":
@@ -1213,10 +881,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def handle_health(self):
         storage_error = False
-        try:
-            ebay_configured = bool(client_id())
-        except OSError:
-            ebay_configured, storage_error = False, True
         try:
             ai_ready = ai_providers.status(effective_provider_environment(), disabled_providers())["ready"]
         except OSError:
@@ -1229,7 +893,6 @@ class Handler(BaseHTTPRequestHandler):
             "instance": APP_ID,
             "version": VERSION,
             "build": BUILD,
-            "ebay_configured": ebay_configured,
             "encrypted_storage": dpapi_available(),
             "ai_ready": ai_ready,
             "providers": {name: bool(os.environ.get(spec["env"])) for name, spec in ai_providers.PROVIDERS.items()},
@@ -1433,59 +1096,6 @@ class Handler(BaseHTTPRequestHandler):
             keys.update(read_env())
             return keys
 
-    def ebay_ready(self):
-        """True when eBay keys are saved; otherwise send the matching error."""
-        try:
-            if client_id():
-                return True
-            kind = "ebay_not_configured"
-        except OSError:
-            kind = "ebay_storage"
-        self.fail(EBAY_STATUS.get(kind, 200), kind, EBAY_MESSAGES[kind], fallback=True)
-        return False
-
-    def handle_reference(self, item_id):
-        if not self.ebay_ready():
-            return
-        try:
-            self.send_json(browse_reference(item_id))
-        except EbayAuthError:
-            self.fail(502, "ebay_auth", EBAY_MESSAGES["ebay_auth"])
-        except urllib.error.HTTPError as error:
-            code = error.code
-            error.close()
-            kind = ("ebay_listing_gone" if code in (404, 410) else
-                    "ebay_auth" if code in (401, 403) else "ebay_unavailable")
-            self.fail(404 if kind == "ebay_listing_gone" else 502, kind, EBAY_MESSAGES[kind])
-        except (urllib.error.URLError, OSError, http.client.HTTPException, RuntimeError):
-            self.fail(502, "ebay_unavailable", EBAY_MESSAGES["ebay_unavailable"])
-
-    def handle_search(self, qs):
-        keywords = (qs.get("keywords", [""])[0]).strip()
-        raw_limit = qs.get("limit", ["20"])[0] or "20"
-        try:
-            limit = int(raw_limit)
-        except (ValueError, TypeError):
-            self.fail(400, "invalid_request", "limit must be a number")
-            return
-        limit = max(1, min(limit, 50))
-        try:
-            gtin = normalize_gtin(qs.get("gtin", [""])[0])
-        except ValueError:
-            raise RequestError(INVALID_BARCODE_MESSAGE, "invalid_barcode") from None
-        if len(keywords) > 200:
-            raise RequestError("This product name is too long. Shorten it and try again.")
-        if not keywords and not gtin:
-            self.fail(400, "invalid_request", "Enter a product name or barcode first.")
-            return
-        if not self.ebay_ready():
-            return
-        result = try_search('', limit, gtin=gtin) if gtin else try_search(keywords, limit)
-        if "error" in result:
-            self.send_json(result, EBAY_STATUS.get(result.get("kind"), 200))
-        else:
-            self.send_json(result)
-
     def handle_settings_get(self):
         plain = read_env()
         provider_error = ""
@@ -1494,13 +1104,6 @@ class Handler(BaseHTTPRequestHandler):
         except OSError:
             env = {}
             provider_error = PROVIDER_STORE_ERROR
-        ebay_error = ""
-        try:
-            cid = get_ebay_cred("ebay_client_id")
-            csec = get_ebay_cred("ebay_client_secret")
-        except OSError:
-            cid = csec = ""
-            ebay_error = EBAY_MESSAGES["ebay_storage"]
         self.send_json({
             "provider_error": provider_error,
             "provider_storage": "windows_encrypted" if dpapi_available() else "plaintext",
@@ -1511,47 +1114,7 @@ class Handler(BaseHTTPRequestHandler):
                        "masked": mask_key(env.get("GEMINI_API_KEY", ""))},
             "openrouter": {"set": bool(env.get("OPENROUTER_API_KEY")),
                            "masked": mask_key(env.get("OPENROUTER_API_KEY", ""))},
-            "ebay": {
-                "storage": "windows_encrypted" if dpapi_available() else "plaintext",
-                "client_id": {"set": bool(cid), "masked": mask_key(cid)},
-                "client_secret": {"set": bool(csec), "masked": mask_key(csec)},
-                "error": ebay_error,
-            },
         })
-
-    def handle_settings_ebay_post(self):
-        body = self.read_json()
-        cid = safe_value(body.get("client_id", ""))
-        csec = safe_value(body.get("client_secret", ""))
-        if not cid and not csec:
-            self.fail(400, "nothing_to_save", "Enter a Client ID or Client Secret first.")
-            return
-        if dpapi_available():
-            if not set_ebay_creds(cid or None, csec or None):
-                self.fail(500, "ebay_storage_write", STORAGE_WRITE_ERROR)
-                return
-            invalidate_ebay_cache()
-            saved = [n for n, v in (("EBAY_CLIENT_ID", cid),
-                                    ("EBAY_CLIENT_SECRET", csec)) if v]
-            self.send_json({"saved": sorted(saved),
-                            "message": "eBay credentials saved to the encrypted local store."})
-            return
-        updates = {}
-        if cid:
-            updates["EBAY_CLIENT_ID"] = cid
-        if csec:
-            updates["EBAY_CLIENT_SECRET"] = csec
-        try:
-            write_env(updates)
-        except OSError:
-            self.fail(500, "ebay_storage_write", STORAGE_WRITE_ERROR)
-            return
-        for k, v in updates.items():
-            os.environ[k] = v
-        invalidate_ebay_cache()
-        self.send_json({"saved": sorted(updates),
-                        "message": "eBay credentials saved to .env - DPAPI unavailable, "
-                                   "saved in plaintext."})
 
     def handle_settings_post(self):
         body = self.read_json()
@@ -1675,7 +1238,7 @@ def main():
     PORT = int(os.environ.get("PORT", "8080"))
     srv = bind_server(PORT)
     forget_saved_sign_in()
-    migrate_secrets()
+    forget_ebay_keys()
     report_unreadable_store()
     try:
         print("Marteloio %s (build %s) on http://localhost:%d" % (VERSION, BUILD, PORT), flush=True)

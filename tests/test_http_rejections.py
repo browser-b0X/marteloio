@@ -223,31 +223,6 @@ class RequestRejectionTests(unittest.TestCase):
                 self.assertEqual(data["error"], "Invalid max_tokens")
                 call.assert_not_called()
 
-    def test_unreadable_ebay_reference_body_is_a_fixed_502(self):
-        auth = {"X-App-Token": server.SESSION_TOKEN}
-        path = "/ebay/reference?item_id=v1%7C123%7C0"
-        with patch.object(server, "client_id", return_value="fixture-id"), \
-                patch.object(server, "app_token_fresh", return_value="fixture"), \
-                patch.object(server, "http_get", return_value=(200, "<html>not json</html>")):
-            status, data = self.get(path, auth)
-        self.assertEqual(status, 502)
-        self.assertEqual(data, {"error": server.UPSTREAM_ERROR_MESSAGE, "kind": "ebay_unavailable"})
-
-    def test_unreadable_ebay_token_body_is_a_fixed_502(self):
-        auth = {"X-App-Token": server.SESSION_TOKEN}
-        path = "/ebay/reference?item_id=v1%7C123%7C0"
-        for body in ("<html>not json</html>", "[]", '{"access_token": "x", "expires_in": "soon"}'):
-            with self.subTest(body=body), \
-                    patch.dict(server.APP_TOKEN, {"value": None, "expires_at": 0}), \
-                    patch.object(server, "client_id", return_value="fixture-id"), \
-                    patch.object(server, "client_secret", return_value="fixture-secret"), \
-                    patch.object(server, "http_post", return_value=(200, body)), \
-                    patch.object(server, "http_get") as listing:
-                status, data = self.get(path, auth)
-                self.assertEqual(status, 502)
-                self.assertEqual(data, {"error": server.UPSTREAM_ERROR_MESSAGE, "kind": "ebay_unavailable"})
-                listing.assert_not_called()
-
     def test_ai_status_requires_session_and_never_exposes_keys(self):
         keys = {"GROQ_API_KEY": "gsk_status_fixture_secret", "GEMINI_API_KEY": ""}
         with patch.object(server, "effective_provider_environment", return_value=keys):
@@ -298,8 +273,7 @@ class RequestRejectionTests(unittest.TestCase):
 
         body = json.dumps({"model": "listing-text", "messages": [{"role": "user", "content": "Fixture"}]}).encode()
         with patch.object(server, "effective_provider_environment", return_value={"GROQ_API_KEY": "gsk_fixture"}), \
-                patch.object(server.ai_providers, "_urlopen", side_effect=fake_open), \
-                patch.object(server, "outbound_request", side_effect=AssertionError("relay HTTP helper used")):
+                patch.object(server.ai_providers, "_urlopen", side_effect=fake_open):
             status, _, data = self.post(body, {"X-App-Token": server.SESSION_TOKEN}, "/llm/chat/completions")
         self.assertEqual(status, 200)
         self.assertEqual(data["model"], "groq/openai/gpt-oss-120b")

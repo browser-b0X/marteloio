@@ -127,8 +127,7 @@ class ProviderFailureTests(unittest.TestCase):
         legacy = {"provider_keys": {"MISTRAL_API_KEY": "encrypted-mistral-fixture"}}
         with patch.dict(server.os.environ, {"MISTRAL_API_KEY": "inherited-mistral-fixture"}, clear=True), \
                 patch.object(server, "read_env", return_value={"MISTRAL_API_KEY": "plain-mistral-fixture"}), \
-                patch.object(server, "load_secrets", return_value=legacy), \
-                patch.object(server, "get_ebay_cred", return_value=""):
+                patch.object(server, "load_secrets", return_value=legacy):
             env = server.effective_provider_environment()
             self.assertNotEqual(env.get("MISTRAL_API_KEY"), "encrypted-mistral-fixture")
             # Generation is not attempted with only a Mistral key.
@@ -192,7 +191,7 @@ class ProviderFailureTests(unittest.TestCase):
     def test_settings_show_inherited_provider_presence_and_empty_file_override(self):
         handler = server.Handler.__new__(server.Handler)
         handler.send_json = Mock()
-        with patch.dict(server.os.environ, {'GROQ_API_KEY': 'fixture-inherited-private', 'GEMINI_API_KEY': 'fixture-disabled'}, clear=True), patch.object(server, 'read_env', return_value={'GEMINI_API_KEY': ''}), patch.object(server, 'get_ebay_cred', return_value=''), patch.object(server, 'load_secrets', return_value={}):
+        with patch.dict(server.os.environ, {'GROQ_API_KEY': 'fixture-inherited-private', 'GEMINI_API_KEY': 'fixture-disabled'}, clear=True), patch.object(server, 'read_env', return_value={'GEMINI_API_KEY': ''}), patch.object(server, 'load_secrets', return_value={}):
             handler.handle_settings_get()
         result = handler.send_json.call_args.args[0]
         self.assertTrue(result['groq']['set'])

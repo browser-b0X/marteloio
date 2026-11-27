@@ -13,7 +13,7 @@ them.
 
 ## Why
 
-People install Marteloio on their own computers and give it their AI and eBay keys. If a
+People install Marteloio on their own computers and give it their AI keys. If a
 modified copy could call itself Marteloio, someone could add harmful code and pass it off
 as this project. Keeping the name for the official project lets people tell the real thing
 from a fork.

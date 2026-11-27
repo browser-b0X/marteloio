@@ -41,11 +41,11 @@ class EncryptedProviderTests(IsolatedCredentialPaths):
         """Contents of the stores set aside as unreadable."""
         return sorted(Path(self.base, name).read_text() for name in os.listdir(self.base) if '.unreadable-' in name)
 
-    def test_malformed_encrypted_store_is_kept_aside_when_ebay_keys_are_saved(self):
+    def test_malformed_encrypted_store_is_kept_aside_when_a_key_is_saved(self):
         import json
         from base64 import b64encode
         blobs = []
-        for value in ([], {'ebay_client_id': []}, {'token': 'invalid-fixture'},
+        for value in ([], {'token': 'invalid-fixture'},
                       {'provider_keys': {'GROQ_API_KEY': ['not-text']}}):
             blob = b64encode(server.dpapi_encrypt(json.dumps(value).encode())).decode('ascii')
             blobs.append(blob)
@@ -53,19 +53,21 @@ class EncryptedProviderTests(IsolatedCredentialPaths):
             with self.assertRaises(OSError):
                 server.load_secrets()
             with contextlib.redirect_stderr(io.StringIO()):
-                self.assertTrue(server.set_ebay_creds('replacement-fixture'))
-            self.assertEqual(server.load_secrets(), {'ebay_client_id': 'replacement-fixture'})
+                server.save_provider_settings({'GROQ_API_KEY': 'replacement-fixture'})
+            self.assertEqual(server.load_secrets(), {'provider_keys': {'GROQ_API_KEY': 'replacement-fixture'}})
         self.assertEqual(self.kept(), sorted(blobs))
 
     def test_save_preserves_other_secrets_and_strips_only_saved_plaintext(self):
-        self.assertTrue(server.save_secrets({'ebay_client_id': 'ebay-fixture', 'token': {'refresh_token': 'token-fixture'}}))
+        self.assertTrue(server.save_secrets({'ebay_client_id': 'ebay-fixture', 'token': {'refresh_token': 'token-fixture'},
+                                            'provider_keys': {'OPENROUTER_API_KEY': 'other-fixture'}}))
         Path(self.env_path).write_text('GROQ_API_KEY=old-fixture\nGEMINI_API_KEY=keep-fixture\nPORT=8080\n')
         result = server.save_provider_settings({'GROQ_API_KEY': 'new-private-fixture'})
         self.assertEqual(result, {'encrypted': True, 'cleanup_pending': False})
         store = server.load_secrets()
         self.assertTrue(store['provider_keys']['GROQ_API_KEY'] == 'new-private-fixture')
-        self.assertTrue(store['ebay_client_id'] == 'ebay-fixture')
+        self.assertTrue(store['provider_keys']['OPENROUTER_API_KEY'] == 'other-fixture')
         self.assertNotIn('token', store)  # an old eBay sign-in goes with any save (0.3.0)
+        self.assertNotIn('ebay_client_id', store)  # and so do old eBay keys (0.4.0)
         self.assertNotIn('GROQ_API_KEY', server.read_env())
         self.assertTrue(server.read_env()['GEMINI_API_KEY'] == 'keep-fixture')
         self.assertNotIn('new-private-fixture', Path(self.secrets_path).read_text())
