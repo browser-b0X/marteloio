@@ -16,7 +16,7 @@ The Windows installer is published only on this repository's
 together with `Marteloio-Setup.exe.sha256`.
 The MIT License lets anyone publish a modified copy, but not under the Marteloio name or logo
 (see [TRADEMARKS.md](TRADEMARKS.md)). Treat a "Marteloio" download from anywhere else as
-untrusted, and never give an unofficial copy your AI or eBay keys. If you find one, please
+untrusted, and never give an unofficial copy your AI keys. If you find one, please
 report it.
 
 ## Checking the installer
@@ -58,7 +58,7 @@ Do not publicly attach:
 
 - `.env`, `.marteloio-secrets.enc` (and any `.marteloio-secrets.unreadable-*.enc`),
   `.ebay_token.json` (left by version 0.2.0 or earlier) or any other file holding keys;
-- AI keys or the eBay Client ID/Secret;
+- AI keys, or an eBay Client ID/Secret left from version 0.3.0 or earlier;
 - `relay.log` or `relay.log.1` before you have read and redacted it;
 - draft backup files or screenshots containing real items, seller details or statistics
   you don't want public.
@@ -83,10 +83,10 @@ never stored in browser storage, are sent only to their own service, and are red
 the service errors kept by the relay. A FreeLLMAPI address must be on this computer or the
 home network, and it is never reached through a proxy.
 
-Outbound requests never follow redirects and refuse responses over 4 MB. Generation sends
-your item details and any accepted reference to the AI services you set up; testing a key
-sends one tiny request to that service; Look up and Find keywords send the product name or
-barcode to eBay. Generated listing HTML contains no scripts, forms or links.
+Outbound requests never follow redirects and refuse responses over 2 MB. Generation sends
+your item details to the AI services you set up; testing a key sends one tiny request to
+that service. Marteloio never contacts eBay: Search eBay is a link your own browser opens.
+Generated listing HTML contains no scripts, forms or links.
 
 The installer installs for the current Windows user only and never asks for administrator
 rights. Before it replaces or removes files, it asks the running copy to shut down; if that

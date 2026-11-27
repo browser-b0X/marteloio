@@ -18,8 +18,8 @@ class AppPathsTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.dir, True)
 
     def test_version_file(self):
-        self.assertEqual((ROOT / "VERSION").read_text(encoding="ascii"), "0.3.0\n")
-        self.assertEqual(app_paths.VERSION, "0.3.0")
+        self.assertEqual((ROOT / "VERSION").read_text(encoding="ascii"), "0.4.0\n")
+        self.assertEqual(app_paths.VERSION, "0.4.0")
         self.assertEqual(app_paths.read_version(str(self.dir)), "0.0.0")
         (self.dir / "VERSION").write_text("not a version!\n")
         self.assertEqual(app_paths.read_version(str(self.dir)), "0.0.0")

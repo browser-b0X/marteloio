@@ -64,7 +64,6 @@ class Item1StoreReadErrors(unittest.TestCase):
     def seed(self):
         with fake_dpapi():
             server.save_provider_settings({"GEMINI_API_KEY": GEMINI})
-            self.assertTrue(server.set_ebay_creds("client-id-fixture", "client-secret-fixture"))
         return Path(server.SECRETS_PATH).read_bytes()
 
     def locked(self, error):
@@ -83,12 +82,11 @@ class Item1StoreReadErrors(unittest.TestCase):
             with self.subTest(error=error.strerror), fake_dpapi(), self.locked(error):
                 with self.assertRaises(OSError):
                     server.save_provider_settings({"GROQ_API_KEY": GROQ})
-                self.assertFalse(server.set_ebay_creds(cid="other-client-id"))
             self.assertEqual(Path(server.SECRETS_PATH).read_bytes(), before)
             self.assertEqual([n for n in self.data.names() if ".unreadable-" in n], [])
         with fake_dpapi():
             store = server.load_secrets()
-        self.assertEqual((store["provider_keys"], store["ebay_client_id"]), ({"GEMINI_API_KEY": GEMINI}, "client-id-fixture"))
+        self.assertEqual(store["provider_keys"], {"GEMINI_API_KEY": GEMINI})
 
     def test_the_one_box_save_reports_it(self):
         self.seed()

@@ -1,6 +1,6 @@
 """Regression tests for the v0.2.0 backend bug list (owner's plan numbers in each docstring).
 
-Offline only: mocked provider calls, fake eBay answers, a reversible fake DPAPI and
+Offline only: mocked provider calls, a reversible fake DPAPI and
 temporary folders. Each test failed on the v0.1 code.
 """
 import contextlib
@@ -290,7 +290,7 @@ class Bug01UnreadableStore(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIs(data["ok"], True)
         self.assertIs(data.get("storage_error"), True)
-        self.assertIs(data["ebay_configured"], False)
+        self.assertNotIn("ebay_configured", data)  # 0.4.0: health says nothing about eBay
 
     def test_ai_status_is_503_with_storage_kind(self):
         with fake_dpapi():
@@ -328,50 +328,13 @@ class Bug14MalformedTokenMigration(unittest.TestCase):
                 with fake_dpapi(), contextlib.redirect_stdout(out), contextlib.redirect_stderr(out), \
                         patch.dict(os.environ):
                     server.forget_saved_sign_in()
-                    server.migrate_secrets()
+                    server.forget_ebay_keys()
                     store = server.load_secrets()
-                self.assertEqual(store.get("ebay_client_id"), "Seller-App-PRD-fixture")
-                self.assertNotIn("token", store)
+                # 0.4.0: the old eBay key is deleted, not moved into the store; the odd file never enters it.
+                self.assertEqual(store, {})
+                self.assertNotIn("EBAY_CLIENT_ID", Path(server.ENV_PATH).read_text())
                 self.assertEqual(Path(server.TOKEN_PATH).read_text(), raw)
                 self.assertIn(".ebay_token.json", out.getvalue())
-
-
-class Bug15And16EbayErrors(unittest.TestCase):
-    def setUp(self):
-        server.invalidate_ebay_cache()
-        self.addCleanup(server.invalidate_ebay_cache)
-
-    def test_rejected_ebay_keys_say_so(self):
-        """#15: a token endpoint 400/401 said 'temporarily unavailable, retry'."""
-        for code in (400, 401):
-            with self.subTest(code=code), patch.object(server, "client_id", return_value="Seller-App-PRD-1"), \
-                    patch.object(server, "client_secret", return_value="PRD-wrong"), \
-                    patch.object(server, "http_post", side_effect=http_error(code, b'{"error":"invalid_client"}')):
-                server.invalidate_ebay_cache()
-                result = server.try_search("nikon f3", 20)
-                self.assertEqual(result["kind"], "ebay_auth")
-                self.assertEqual(result["error"], server.EBAY_MESSAGES["ebay_auth"])
-                app = RunningApp(self)
-                status, data = app.request("GET", "/ebay/search?keywords=nikon%20f4&limit=20")
-                self.assertEqual((status, data["kind"]), (502, "ebay_auth"))
-
-    def test_a_missing_client_secret_is_not_configured(self):
-        app = RunningApp(self)
-        with patch.object(server, "client_id", return_value="Seller-App-PRD-1"), \
-                patch.object(server, "client_secret", return_value=""), \
-                patch.object(server, "http_post", side_effect=AssertionError("no token request without a secret")):
-            status, data = app.request("GET", "/ebay/search?keywords=nikon&limit=20")
-        self.assertEqual((status, data["kind"]), (200, "ebay_not_configured"))
-
-    def test_ended_listing_is_gone_not_a_server_failure(self):
-        """#16: eBay's 404 for an ended listing became a generic 502."""
-        app = RunningApp(self)
-        with patch.object(server, "client_id", return_value="Seller-App-PRD-1"), \
-                patch.object(server, "app_token_fresh", return_value="app-token"), \
-                patch.object(server, "http_get", side_effect=http_error(404, b'{"errors":[{"errorId":11001}]}')):
-            status, data = app.request("GET", "/ebay/reference?item_id=v1%7C123456789012%7C0")
-        self.assertEqual(status, 404)
-        self.assertEqual(data, {"error": "This listing is no longer on eBay. Pick another one.", "kind": "ebay_listing_gone"})
 
 
 class Bug21BrowserFailure(unittest.TestCase):
@@ -441,7 +404,7 @@ class Bug35PortEighty(unittest.TestCase):
 class ErrorKinds(unittest.TestCase):
     def test_every_json_error_carries_a_kind(self):
         app = RunningApp(self)
-        cases = [("GET", "/ebay/search?limit=20", None), ("GET", "/ebay/search?gtin=123", None),
+        cases = [("GET", "/ebay/search?limit=20", None), ("GET", "/ebay/search?gtin=123", None),  # gone in 0.4.0: not_found
                  ("POST", "/settings", {}), ("POST", "/settings/ebay", {}), ("POST", "/nope", {}),
                  ("POST", "/llm/chat/completions", {"model": "other"}), ("GET", "/nope", None)]
         for method, path, body in cases:
@@ -451,8 +414,7 @@ class ErrorKinds(unittest.TestCase):
                 self.assertIsInstance(data.get("kind"), str, data)
                 self.assertTrue(data["kind"])
         status, data = app.request("GET", "/ebay/search?gtin=123", None)
-        self.assertEqual((status, data["kind"]), (400, "invalid_barcode"))
-        self.assertEqual(data["error"], "Check the barcode: it should have 8, 12, 13 or 14 digits.")
+        self.assertEqual((status, data["kind"]), (404, "not_found"))
         status, data = app.request("GET", "/settings", token=False)
         self.assertEqual((status, data["kind"]), (403, "session_expired"))
 

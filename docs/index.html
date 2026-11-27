@@ -404,7 +404,6 @@
         <span class="chip"><i style="background:#F55036"></i>Groq</span>
         <span class="chip"><i style="background:#8B5CF6"></i>OpenRouter</span>
         <span class="chip"><i style="background:#14B8A6"></i>FreeLLMAPI</span>
-        <span class="chip"><i style="background:#27C281"></i>eBay Browse API <small style="color:var(--dim);font-weight:600">optional</small></span>
       </div>
     </div>
   </section>
@@ -531,15 +530,15 @@
           <h3><svg class="icon"><use href="#i-home"/></svg>Stays on your PC</h3>
           <ul>
             <li>Drafts, recent history and templates, in your browser</li>
-            <li>AI and eBay keys, encrypted for your Windows account</li>
+            <li>AI keys, encrypted for your Windows account</li>
             <li>The app itself, served only to your own machine</li>
           </ul>
         </div>
         <div class="card reveal">
           <h3><svg class="icon"><use href="#i-send"/></svg>Sent when you ask</h3>
           <ul>
-            <li>Your notes and accepted references, to the AI service you set up</li>
-            <li>Product names or barcodes, to eBay when you choose Look up or Find keywords</li>
+            <li>Your notes, to the AI service you set up</li>
+            <li>Nothing to eBay: Search eBay is a link your own browser opens</li>
           </ul>
         </div>
         <div class="card reveal">
@@ -685,7 +684,7 @@
         <details class="reveal"><summary>Why does Windows warn me about the installer?</summary><p>Marteloio-Setup.exe isn't code-signed yet, so Windows SmartScreen doesn't know who made it and shows "Windows protected your PC". Choose More info, then Run anyway. Signing through the SignPath Foundation, which signs open-source projects for free, is in progress; see the <a href="https://github.com/browser-b0X/marteloio/blob/main/CODE_SIGNING_POLICY.md">code signing policy</a>. Until then you can <a href="https://github.com/browser-b0X/marteloio/blob/main/SECURITY.md#checking-the-installer">check the file's SHA-256</a> against the one on the release page.</p></details>
         <details class="reveal"><summary>How do I update or uninstall it?</summary><p>To update, download the newer Marteloio-Setup.exe and run it. It closes Marteloio, replaces the program and keeps your keys, settings and drafts. To uninstall, open Windows Settings › Apps, choose Marteloio, then Uninstall. It asks whether to remove your saved keys and settings too; the default keeps them.</p></details>
         <details class="reveal"><summary>Does it post listings to eBay for me?</summary><p>No. Marteloio drafts the title and the description HTML. You copy them into eBay's listing form, check the preview, and publish yourself.</p></details>
-        <details class="reveal"><summary>Do I need an eBay developer account?</summary><p>Only for Look up and Find keywords, which search other sellers' listings through eBay's Browse API. A free eBay Developers account gives you the keys. Everything else works without it.</p></details>
+        <details class="reveal"><summary>Do I need an eBay developer account?</summary><p>No. Marteloio asks eBay for nothing. Search eBay, beside the product name, opens eBay's own search in your browser so you can see how other sellers list the same item.</p></details>
         <details class="reveal"><summary>Does it work on a Mac or Linux?</summary><p>The installer is for Windows 10 and 11. On a Mac or Linux you can run Marteloio from source with Python 3.10 or newer: <code>bash start-all.sh</code> starts it. That launcher is included but not yet verified, so please report what you find.</p></details>
         <details class="reveal"><summary>What is the small credit at the bottom of a listing?</summary><p>Generated listings end with a short "Listing created with Marteloio" line. It follows eBay's rules for third-party credits: ten words or fewer, no links and no web address. It's how a free tool gets found; it is plain HTML, so you can remove it if you prefer.</p></details>
         <details class="reveal"><summary>How do I know I have the real Marteloio?</summary><p>Download it only from <a href="https://github.com/browser-b0X/marteloio">github.com/browser-b0X/marteloio</a> or this site; the installer is published only on the repository's Releases page, with its SHA-256. The code and logo files are MIT-licensed, so anyone may build on them, but the Marteloio name and logo are the project's trademarks: a modified copy has to use its own name and logo. Treat a "Marteloio" download from anywhere else as untrusted and don't give it your keys.</p></details>

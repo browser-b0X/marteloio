@@ -245,7 +245,7 @@ class RouteTests(SettingsCase):
         self.assertEqual(status, 200)
         self.assertEqual(set(data), {"version", "build", "installed", "data_dir", "os", "port"})
         self.assertEqual((data["version"], data["build"], data["data_dir"], data["port"]),
-                         ("0.3.0", server.BUILD, server.DATA_DIR, self.app.port))
+                         ("0.4.0", server.BUILD, server.DATA_DIR, self.app.port))
         self.assertRegex(data["build"], r"^[0-9a-f]{12}$")
         self.assertIs(data["installed"], app_paths.INSTALLED)
         self.assertIn(data["os"], ("windows", "mac", "linux", "other"))
@@ -255,9 +255,9 @@ class RouteTests(SettingsCase):
         status, data = self.app.request("GET", "/health", token=False)
         self.assertEqual(status, 200)
         # The build the running copy started with (the launcher compares it with the files on disk).
-        self.assertEqual((data["version"], data["build"]), ("0.3.0", server.BUILD))
+        self.assertEqual((data["version"], data["build"]), ("0.4.0", server.BUILD))
         self.assertRegex(data["build"], r"^[0-9a-f]{12}$")
-        for field in ("ok", "app", "instance", "ebay_configured", "encrypted_storage", "ai_ready", "providers"):
+        for field in ("ok", "app", "instance", "encrypted_storage", "ai_ready", "providers"):
             self.assertIn(field, data)
         self.assertEqual(set(data["providers"]), {"freellmapi", "gemini", "groq", "openrouter"})
         self.assertNotIn("storage_error", data)

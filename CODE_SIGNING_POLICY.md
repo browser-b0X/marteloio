@@ -43,8 +43,8 @@ requested by the user or the person installing or operating it.
 
 In practice, Marteloio runs on your own computer. It sends your item notes only to the AI
 service you set up (Google Gemini, Groq, OpenRouter or FreeLLMAPI), and only when you ask it to
-write or rewrite a listing. It contacts eBay only when you use Look up, Find keywords or Connect
-eBay. It has no analytics, tracking or automatic updates. See [SECURITY.md](SECURITY.md) for
+write or rewrite a listing. It never contacts eBay: Search eBay is a link your own browser
+opens. It has no analytics, tracking or automatic updates. See [SECURITY.md](SECURITY.md) for
 where your data is kept.
 
 ## Reporting

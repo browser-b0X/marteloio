@@ -1,6 +1,7 @@
-"""eBay access since 0.3.0: an application token for Look up and Find keywords only.
+"""Since 0.3.0: no eBay account sign-in and no seller statistics.
 
-No eBay account sign-in, no seller statistics. Temporary files and fake HTTP responses only.
+A sign-in saved by 0.2.0 or earlier is deleted on start. (0.4.0 removed the remaining eBay
+access too: see test_no_ebay_keys.py.) Temporary files only.
 """
 import contextlib
 import io
@@ -9,7 +10,6 @@ import os
 from pathlib import Path
 import sys
 import unittest
-import urllib.error
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -28,58 +28,16 @@ def quiet(function):
     return out.getvalue()
 
 
-class AppTokenTests(unittest.TestCase):
-    def test_malformed_grants_are_rejected_without_inventing_expiry(self):
-        invalid = [[], {'access_token': ''}, {'access_token': []}, {'access_token': 'fixture'},
-                   *({'access_token': 'fixture', 'expires_in': expiry} for expiry in [True, -1, 0, 2.5, 'bad', 2147483648])]
-        with patch.object(server, 'client_id', return_value='fixture-id'), patch.object(server, 'client_secret', return_value='fixture-secret'):
-            for response in invalid:
-                with patch.object(server, 'http_post', return_value=(200, json.dumps(response))):
-                    with self.assertRaises(ValueError):
-                        server.exchange_grant({})
-            with patch.object(server, 'http_post', return_value=(200, '{"access_token":"fixture","expires_in":"7200"}')), patch.object(server.time, 'time', return_value=100):
-                self.assertEqual(server.exchange_grant({})[1]['expires_at'], 7300)
-
-    def test_upstream_authorization_error_is_closed_and_sanitized(self):
-        body = io.BytesIO(b'{"error_description":"PRIVATE-FIXTURE"}')
-        failure = urllib.error.HTTPError('https://fixture', 401, 'fixture', {}, body)
-        with patch.object(server, 'client_id', return_value='fixture-id'), patch.object(server, 'client_secret', return_value='fixture-secret'), patch.object(server, 'http_post', side_effect=failure):
-            with self.assertRaisesRegex(RuntimeError, 'HTTP 401') as error:
-                server.exchange_grant({})
-        self.assertNotIn('PRIVATE', str(error.exception))
-        self.assertTrue(body.closed)
-
-    def test_the_only_grant_marteloio_asks_ebay_for_is_client_credentials(self):
-        sent = []
-
-        def post(url, data, headers, timeout=15):
-            sent.append((url, data.decode()))
-            return 200, '{"access_token":"app-fixture","expires_in":7200}'
-
-        server.invalidate_ebay_cache()
-        self.addCleanup(server.invalidate_ebay_cache)
-        with patch.object(server, 'client_id', return_value='fixture-id'), patch.object(server, 'client_secret', return_value='fixture-secret'), \
-                patch.object(server, 'http_post', side_effect=post):
-            self.assertEqual(server.app_token_fresh(), 'app-fixture')
-        self.assertEqual(len(sent), 1)
-        self.assertEqual(sent[0][0], 'https://api.ebay.com/identity/v1/oauth2/token')
-        self.assertIn('grant_type=client_credentials', sent[0][1])
-        self.assertNotIn('refresh_token', sent[0][1])
-        self.assertNotIn('authorization_code', sent[0][1])
-
-
 class NoAccountSignInTests(unittest.TestCase):
     def setUp(self):
         self.data = DataFolder(self)
 
     def test_the_account_and_seller_statistics_routes_are_gone(self):
         app = RunningApp(self)
-        with patch.object(server, 'http_post', side_effect=AssertionError('no eBay request')), \
-                patch.object(server, 'http_get', side_effect=AssertionError('no eBay request')):
-            for method, path in REMOVED_ROUTES:
-                with self.subTest(path=path):
-                    status, data = app.request(method, path, body={} if method == "POST" else None)
-                    self.assertEqual((status, data.get("kind")), (404, "not_found"))
+        for method, path in REMOVED_ROUTES:
+            with self.subTest(path=path):
+                status, data = app.request(method, path, body={} if method == "POST" else None)
+                self.assertEqual((status, data.get("kind")), (404, "not_found"))
 
     def test_the_code_names_no_account_or_seller_endpoint(self):
         source = (ROOT / "server.py").read_text(encoding="utf-8")
@@ -92,17 +50,6 @@ class NoAccountSignInTests(unittest.TestCase):
         for gone in ("/ebay/userstats", "/ebay/token-user", "/ebay/authorize-url", 'id="ruName"', 'id="connectBtn"',
                      'id="fetchStatsBtn"', "feedback_star"):
             self.assertNotIn(gone, page, gone)
-
-    def test_search_keeps_nothing_about_a_listing_s_seller(self):
-        response = {'itemSummaries': [{'title': 'Canon AE-1 Program body', 'itemId': 'v1|1|0',
-                                       'itemWebUrl': 'https://www.ebay.com/itm/1',
-                                       'seller': {'username': 'PRIVATE-SELLER', 'feedbackScore': 4321, 'feedbackPercentage': '99.9'}}]}
-        with patch.object(server, 'app_token_fresh', return_value='fixture'), \
-                patch.object(server, 'http_get', return_value=(200, json.dumps(response))):
-            result = server.browse_search('canon ae-1', 20)
-        self.assertEqual(result['items'], [{'title': 'Canon AE-1 Program body', 'url': 'https://www.ebay.com/itm/1', 'item_id': 'v1|1|0'}])
-        for private in ('PRIVATE-SELLER', '4321', '99.9'):
-            self.assertNotIn(private, json.dumps(result))
 
     def test_a_sign_in_saved_by_an_older_version_is_removed_from_the_store(self):
         token = {"access_token": "old-access-fixture", "refresh_token": "old-refresh-fixture", "expires_at": 1}
@@ -152,8 +99,8 @@ class NoAccountSignInTests(unittest.TestCase):
         with fake_dpapi():
             self.assertTrue(server.save_secrets({"ebay_client_id": "Old-App-PRD", "token": {"refresh_token": "old"}}))
             with contextlib.redirect_stderr(io.StringIO()):
-                self.assertTrue(server.set_ebay_creds("New-App-PRD"))
-            self.assertEqual(server.load_secrets(), {"ebay_client_id": "New-App-PRD"})
+                server.save_provider_settings({"GROQ_API_KEY": "gsk_new_fixture"})
+            self.assertEqual(server.load_secrets(), {"provider_keys": {"GROQ_API_KEY": "gsk_new_fixture"}})
 
     def test_a_sign_in_in_the_pre_rename_store_is_removed_and_keys_move(self):
         with fake_dpapi():
@@ -178,12 +125,12 @@ class NoAccountSignInTests(unittest.TestCase):
 
         with patch.object(server, "load_env"), patch.object(server, "bind_server", return_value=FakeServer()), \
                 patch.object(server, "forget_saved_sign_in", side_effect=lambda: order.append("forget")), \
-                patch.object(server, "migrate_secrets", side_effect=lambda: order.append("migrate")), \
+                patch.object(server, "forget_ebay_keys", side_effect=lambda: order.append("keys")), \
                 patch.object(server, "report_unreadable_store", side_effect=lambda: order.append("report")), \
                 patch.object(server, "PORT", 8080), contextlib.redirect_stdout(io.StringIO()):
             with self.assertRaises(Stop):
                 server.main()
-        self.assertEqual(order, ["forget", "migrate", "report", "closed"])
+        self.assertEqual(order, ["forget", "keys", "report", "closed"])
 
     def test_a_file_that_is_not_a_sign_in_is_left_alone(self):
         for raw in ("[]", '"text"', '{"access_token": 5}', "{}", "{not json"):

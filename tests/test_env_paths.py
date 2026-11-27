@@ -8,7 +8,7 @@ before calling the real functions. No ports are opened and no provider is contac
 The project's real ``.env``, ``.marteloio-secrets.enc`` (and the pre-rename
 ``.lanzalister-secrets.enc``) and ``.ebay_token.json`` are
 hashed at import and re-hashed after every test, so a redirect that silently stops
-working fails the suite instead of corrupting live credentials. ``migrate_secrets()``
+working fails the suite instead of corrupting live credentials. ``forget_saved_sign_in()``
 deletes the token file it was pointed at, which is why that third path is guarded too.
 If another process writes those files mid-run the guard trips as well, which is the
 point: this suite must never be the reason a credential changed.
@@ -136,9 +136,13 @@ class EnvWritePathTests(IsolatedCredentialPaths):
         self.assertEqual(str(error.exception), "Unsupported setting")
         self.assertEqual(self.read(), before)
         self.assertNotIn("SHELL", self.read())
-        self.assertEqual(set(server.SETTING_KEYS) | {"EBAY_CLIENT_ID", "EBAY_CLIENT_SECRET"},
-                         {"GROQ_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY", "FREELLMAPI_KEY",
-                          "FREELLMAPI_URL", "EBAY_CLIENT_ID", "EBAY_CLIENT_SECRET"})
+        # 0.4.0: eBay keys are no longer a setting, so nothing can write them to .env again.
+        for gone in ("EBAY_CLIENT_ID", "EBAY_CLIENT_SECRET"):
+            with self.assertRaises(ValueError):
+                server.write_env({gone: "cid"})
+            self.assertEqual(self.read(), before)
+        self.assertEqual(set(server.SETTING_KEYS),
+                         {"GROQ_API_KEY", "GEMINI_API_KEY", "OPENROUTER_API_KEY", "FREELLMAPI_KEY", "FREELLMAPI_URL"})
 
     def test_safe_value_blocks_env_line_injection(self):
         for value in ("a\nb", "a\rb", "a\x7fb", "a\x00b", "x" * 8193, 123, None):
@@ -246,8 +250,17 @@ class EnvWritePathTests(IsolatedCredentialPaths):
         with patch.object(server, "dpapi_available", return_value=False):
             self.assertFalse(server.save_secrets({"a": "b"}))
             self.assertEqual(server.load_secrets(), {})
-            self.assertFalse(server.set_ebay_creds(cid="x", csec="y"))
         self.assertFalse(os.path.exists(server.SECRETS_PATH))
+
+
+def seller_save(**keys):
+    """A seller's own save (Settings › AI). False when the store could not be written."""
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            server.save_provider_settings(keys)
+        return True
+    except OSError:
+        return False
 
 
 @unittest.skipUnless(server.dpapi_available(), "DPAPI is only available on Windows")
@@ -255,29 +268,23 @@ class SecretStoreTests(IsolatedCredentialPaths):
     SECRET = "SEC-fixture-9f3a-do-not-leak"
 
     def test_round_trip_stores_ciphertext_not_plaintext(self):
-        self.assertTrue(server.save_secrets({"ebay_client_id": "CID-fixture",
-                                             "ebay_client_secret": self.SECRET}))
-        self.assertEqual(server.load_secrets(), {"ebay_client_id": "CID-fixture",
-                                                 "ebay_client_secret": self.SECRET})
+        data = {"provider_keys": {"GROQ_API_KEY": "gsk_fixture", "GEMINI_API_KEY": self.SECRET}}
+        self.assertTrue(server.save_secrets(data))
+        self.assertEqual(server.load_secrets(), data)
         with open(server.SECRETS_PATH, "rb") as handle:
             raw = handle.read()
         self.assertNotIn(self.SECRET.encode(), raw)
-        self.assertNotIn(b"CID-fixture", raw)
+        self.assertNotIn(b"gsk_fixture", raw)
         decoded = b64decode(raw.strip(), validate=True)
         self.assertTrue(decoded)
         self.assertNotEqual(decoded, raw.strip())
         self.assertEqual(b64encode(decoded), raw.strip())
         self.assertNoTempLeftovers()
 
-    def test_set_ebay_creds_merges_and_wins_over_the_environment(self):
-        self.assertTrue(server.save_secrets({"ebay_client_id": "CID-fixture",
-                                             "ebay_client_secret": self.SECRET}))
-        server.set_ebay_creds(cid="CID-2")
-        loaded = server.load_secrets()
-        self.assertEqual(loaded.get("ebay_client_id"), "CID-2")
-        self.assertEqual(loaded.get("ebay_client_secret"), self.SECRET)
-        with patch.dict(os.environ, {"EBAY_CLIENT_ID": "CID-from-env"}):
-            self.assertEqual(server.get_ebay_cred("ebay_client_id"), "CID-2")
+    def test_a_seller_save_merges_into_the_store(self):
+        self.assertTrue(server.save_secrets({"provider_keys": {"GROQ_API_KEY": "gsk_fixture"}}))
+        self.assertTrue(seller_save(GEMINI_API_KEY=self.SECRET))
+        self.assertEqual(server.load_secrets(), {"provider_keys": {"GROQ_API_KEY": "gsk_fixture", "GEMINI_API_KEY": self.SECRET}})
         self.assertNoTempLeftovers()
 
     def test_a_corrupt_store_reports_the_specific_error_then_recovers(self):
@@ -288,28 +295,28 @@ class SecretStoreTests(IsolatedCredentialPaths):
         self.assertEqual(str(error.exception),
                          "Cannot read encrypted credentials; restore the store or use its original Windows account")
         # Saving keys again starts a new store; the unreadable one is kept under a new name.
-        with contextlib.redirect_stderr(io.StringIO()):
-            self.assertTrue(server.set_ebay_creds(cid="x"))
-        self.assertEqual(server.load_secrets(), {"ebay_client_id": "x"})
+        self.assertTrue(seller_save(GROQ_API_KEY="gsk_new"))
+        self.assertEqual(server.load_secrets(), {"provider_keys": {"GROQ_API_KEY": "gsk_new"}})
         kept = [name for name in os.listdir(self.base) if ".unreadable-" in name]
         self.assertEqual(len(kept), 1)
         with open(os.path.join(self.base, kept[0]), encoding="utf-8") as handle:
             self.assertEqual(handle.read(), "!!!not-valid-base64-or-ciphertext!!!")
-        self.assertTrue(server.save_secrets({"ebay_client_id": "CID-3"}))
-        self.assertEqual(server.load_secrets(), {"ebay_client_id": "CID-3"})
+        self.assertTrue(server.save_secrets({"provider_keys": {"GROQ_API_KEY": "gsk_third"}}))
+        self.assertEqual(server.load_secrets(), {"provider_keys": {"GROQ_API_KEY": "gsk_third"}})
         self.assertNoTempLeftovers()
 
 
 @unittest.skipUnless(server.dpapi_available(), "DPAPI is only available on Windows")
-class MigrateSecretsTests(IsolatedCredentialPaths):
-    CID = "CID-migrate-fixture"
-    CSEC = "SEC-migrate-fixture-do-not-leak"
+class ForgetOldEbayDataTests(IsolatedCredentialPaths):
+    """0.4.0 deletes eBay keys saved by 0.3.0 or earlier; 0.3.0 deleted eBay sign-ins. Real DPAPI."""
+    CID = "CID-old-fixture"
+    CSEC = "SEC-old-fixture-do-not-leak"
     TOKEN = {"access_token": "v^1.1#i$1.1-fixture", "expires_in": 7200}
 
-    def migrate(self):
+    def forget(self):
         captured = io.StringIO()
         with contextlib.redirect_stdout(captured):
-            server.migrate_secrets()
+            server.forget_ebay_keys()
         return captured.getvalue()
 
     def seed_env(self):
@@ -320,65 +327,59 @@ class MigrateSecretsTests(IsolatedCredentialPaths):
         with open(server.TOKEN_PATH, "w", encoding="utf-8") as handle:
             json.dump(self.TOKEN, handle)
 
-    def test_a_confirmed_store_write_is_what_licenses_destroying_the_plaintext(self):
+    def test_ebay_keys_in_the_env_file_are_deleted_and_nothing_else(self):
         self.seed_env()
         with patch.dict(os.environ, {"EBAY_CLIENT_ID": self.CID, "EBAY_CLIENT_SECRET": self.CSEC}):
-            logged = self.migrate()
-            self.assertFalse("EBAY_CLIENT_ID" in os.environ, "Migrated client ID remained in the environment")
-            self.assertFalse("EBAY_CLIENT_SECRET" in os.environ, "Migrated client secret remained in the environment")
-        self.assertIn("migrated eBay app keys", logged)
-        stored = server.load_secrets()
-        self.assertEqual(stored["ebay_client_id"], self.CID)
-        self.assertEqual(stored["ebay_client_secret"], self.CSEC)
-        self.assertNotIn("token", stored)
-        env_text = self.read()
-        self.assertNotIn("EBAY_CLIENT_ID", env_text)
-        self.assertNotIn("EBAY_CLIENT_SECRET", env_text)
-        self.assertNotIn(self.CSEC, env_text)
-        self.assertIn("# provider keys stay put", env_text)
-        self.assertIn("GROQ_API_KEY=gsk_keep", env_text)
-        with open(server.SECRETS_PATH, "rb") as handle:
-            self.assertNotIn(self.CSEC.encode(), handle.read())
+            logged = self.forget()
+            self.assertFalse("EBAY_CLIENT_ID" in os.environ, "The old client ID remained in the environment")
+            self.assertFalse("EBAY_CLIENT_SECRET" in os.environ, "The old client secret remained in the environment")
+        self.assertIn("removed the eBay keys", logged)
+        self.assertNotIn(self.CSEC, logged)
+        self.assertEqual(self.read(), "# provider keys stay put\nGROQ_API_KEY=gsk_keep\n")
+        self.assertFalse(os.path.exists(server.SECRETS_PATH), "the keys were moved into a store instead of deleted")
+        self.assertNoTempLeftovers()
+
+    def test_ebay_keys_in_the_store_are_deleted_and_ai_keys_stay(self):
+        self.assertTrue(server.save_secrets({"ebay_client_id": self.CID, "ebay_client_secret": self.CSEC,
+                                            "provider_keys": {"GROQ_API_KEY": "gsk_keep"}}))
+        logged = self.forget()
+        self.assertIn("removed the eBay keys", logged)
+        self.assertEqual(server.load_secrets(), {"provider_keys": {"GROQ_API_KEY": "gsk_keep"}})
         self.assertNoTempLeftovers()
 
     def test_a_second_run_finds_nothing_and_changes_nothing(self):
         self.seed_env()
+        self.assertTrue(server.save_secrets({"ebay_client_id": self.CID, "provider_keys": {"GROQ_API_KEY": "gsk_keep"}}))
         with patch.dict(os.environ):
-            self.migrate()
-            first_store = server.load_secrets()
+            self.forget()
+            first_store = snapshot(server.SECRETS_PATH)
             first_env = self.read()
-            self.assertTrue(first_store["ebay_client_id"])
-            logged = self.migrate()
-        self.assertEqual(server.load_secrets(), first_store)
+            logged = self.forget()
+        self.assertEqual(snapshot(server.SECRETS_PATH), first_store)
         self.assertEqual(self.read(), first_env)
         self.assertEqual(logged, "")
         self.assertNoTempLeftovers()
 
-    def test_a_failed_store_write_leaves_every_plaintext_copy_in_place(self):
-        self.seed_env()
-        env_before = self.read()
-        with patch.object(server, "save_secrets", return_value=False):
-            logged = self.migrate()
-        self.assertIn("leaving plaintext in place", logged)
-        self.assertEqual(self.read(), env_before)
-        self.assertIn(self.CSEC, self.read())
-        self.assertFalse(os.path.exists(server.SECRETS_PATH))
+    def test_a_failed_store_write_leaves_the_store_as_it_was(self):
+        self.assertTrue(server.save_secrets({"ebay_client_id": self.CID, "provider_keys": {"GROQ_API_KEY": "gsk_keep"}}))
+        before = snapshot(server.SECRETS_PATH)
+        with patch.object(server, "_store_write", return_value=False):
+            logged = self.forget()
+        self.assertIn("will retry next start", logged)
+        self.assertEqual(snapshot(server.SECRETS_PATH), before)
         self.assertNoTempLeftovers()
 
     def test_a_store_it_cannot_read_is_never_overwritten(self):
-        self.seed_env()
         with open(server.SECRETS_PATH, "w", encoding="utf-8") as handle:
             handle.write("!!!not-valid-base64-or-ciphertext!!!")
         corrupt_before = snapshot(server.SECRETS_PATH)
-        env_before = self.read()
-        logged = self.migrate()
-        self.assertIn("migration stopped without changing credentials", logged)
+        logged = self.forget()
+        self.assertIn("left as they are", logged)
         self.assertEqual(snapshot(server.SECRETS_PATH), corrupt_before)
-        self.assertEqual(self.read(), env_before)
-        self.assertEqual(server.read_env()["EBAY_CLIENT_SECRET"], self.CSEC)
+        self.assertEqual(sorted(os.listdir(self.base)), [os.path.basename(server.SECRETS_PATH)])
         self.assertNoTempLeftovers()
 
-    def test_a_file_that_is_not_a_sign_in_survives_while_credentials_still_move(self):
+    def test_a_file_that_is_not_a_sign_in_survives_while_the_keys_still_go(self):
         self.seed_env()
         with open(server.TOKEN_PATH, "w", encoding="utf-8") as handle:
             handle.write("{not json")
@@ -387,9 +388,8 @@ class MigrateSecretsTests(IsolatedCredentialPaths):
             with contextlib.redirect_stdout(captured):
                 server.forget_saved_sign_in()
             self.assertIn("left in place", captured.getvalue())
-            logged = self.migrate()
-        self.assertIn("migrated eBay app keys", logged)
-        self.assertEqual(server.load_secrets()["ebay_client_id"], self.CID)
+            logged = self.forget()
+        self.assertIn("removed the eBay keys", logged)
         self.assertNotIn("EBAY_CLIENT_ID", self.read())
         self.assertTrue(os.path.exists(server.TOKEN_PATH), "a token file it could not parse was deleted")
         with open(server.TOKEN_PATH, encoding="utf-8") as handle:
@@ -413,10 +413,10 @@ class MigrateSecretsTests(IsolatedCredentialPaths):
         self.assertEqual(captured.getvalue(), "")
         self.assertNoTempLeftovers()
 
-    def test_with_nothing_to_migrate_no_store_is_created(self):
+    def test_with_no_ebay_keys_nothing_is_created_or_changed(self):
         self.seed("# provider keys only\nGROQ_API_KEY=gsk_keep\n")
         env_before = self.read()
-        self.assertEqual(self.migrate(), "")
+        self.assertEqual(self.forget(), "")
         self.assertFalse(os.path.exists(server.SECRETS_PATH))
         self.assertEqual(self.read(), env_before)
 
@@ -447,59 +447,59 @@ class LegacyStoreRenameTests(IsolatedCredentialPaths):
 
     def test_read_path_prefers_new_store_then_legacy(self):
         self.assertEqual(server.secrets_read_path(), server.SECRETS_PATH)
-        self.write_store(server.LEGACY_SECRETS_PATH, {"ebay_client_id": "legacy-fixture"})
+        self.write_store(server.LEGACY_SECRETS_PATH, {"provider_keys": {"GROQ_API_KEY": "legacy-fixture"}})
         self.assertEqual(server.secrets_read_path(), server.LEGACY_SECRETS_PATH)
-        self.assertEqual(server.load_secrets(), {"ebay_client_id": "legacy-fixture"})
-        self.write_store(server.SECRETS_PATH, {"ebay_client_id": "new-fixture"})
+        self.assertEqual(server.load_secrets(), {"provider_keys": {"GROQ_API_KEY": "legacy-fixture"}})
+        self.write_store(server.SECRETS_PATH, {"provider_keys": {"GROQ_API_KEY": "new-fixture"}})
         self.assertEqual(server.secrets_read_path(), server.SECRETS_PATH)
-        self.assertEqual(server.load_secrets(), {"ebay_client_id": "new-fixture"})
+        self.assertEqual(server.load_secrets(), {"provider_keys": {"GROQ_API_KEY": "new-fixture"}})
 
     def test_first_write_moves_legacy_contents_and_then_removes_it(self):
         self.write_store(server.LEGACY_SECRETS_PATH, {"ebay_client_id": "legacy-fixture",
                                                       "provider_keys": {"GROQ_API_KEY": "legacy-key-fixture"}})
-        self.assertTrue(server.set_ebay_creds(csec="secret-fixture"))
+        self.assertTrue(seller_save(GEMINI_API_KEY="gemini-fixture"))
         self.assertFalse(os.path.exists(server.LEGACY_SECRETS_PATH))
-        self.assertEqual(server.load_secrets(), {"ebay_client_id": "legacy-fixture", "ebay_client_secret": "secret-fixture",
-                                                 "provider_keys": {"GROQ_API_KEY": "legacy-key-fixture"}})
+        # the AI keys move to the new file; an eBay key from 0.3.0 does not come along
+        self.assertEqual(server.load_secrets(), {"provider_keys": {"GROQ_API_KEY": "legacy-key-fixture", "GEMINI_API_KEY": "gemini-fixture"}})
         self.assertNoTempLeftovers()
 
     def test_failed_new_write_keeps_the_legacy_store(self):
-        self.write_store(server.LEGACY_SECRETS_PATH, {"ebay_client_id": "legacy-fixture"})
+        self.write_store(server.LEGACY_SECRETS_PATH, {"provider_keys": {"GROQ_API_KEY": "legacy-fixture"}})
         with open(server.LEGACY_SECRETS_PATH, "rb") as handle:
             before = handle.read()
         with patch.object(server, "atomic_write", side_effect=OSError("fixture disk full")):
-            self.assertFalse(server.set_ebay_creds(cid="replacement-fixture"))
-        with patch.object(server, "dpapi_decrypt", side_effect=[b'{"ebay_client_id": "legacy-fixture"}', b"{}"]):
-            self.assertFalse(server.set_ebay_creds(cid="replacement-fixture"))  # round-trip mismatch
+            self.assertFalse(seller_save(GROQ_API_KEY="replacement-fixture"))
+        with patch.object(server, "dpapi_decrypt", side_effect=[b'{"provider_keys": {"GROQ_API_KEY": "legacy-fixture"}}', b"{}"]):
+            self.assertFalse(seller_save(GROQ_API_KEY="replacement-fixture"))  # round-trip mismatch
         with open(server.LEGACY_SECRETS_PATH, "rb") as handle:
             self.assertEqual(handle.read(), before)
         self.assertFalse(os.path.exists(server.SECRETS_PATH))
 
     def test_unverified_new_file_keeps_the_legacy_store(self):
-        self.write_store(server.LEGACY_SECRETS_PATH, {"ebay_client_id": "legacy-fixture"})
+        self.write_store(server.LEGACY_SECRETS_PATH, {"provider_keys": {"GROQ_API_KEY": "legacy-fixture"}})
         original = server._store_read_raw
         def unreadable_new(path=None):
             if path == server.SECRETS_PATH:
                 raise OSError("fixture: new file unreadable")
             return original(path)
         with patch.object(server, "_store_read_raw", side_effect=unreadable_new):
-            self.assertTrue(server.set_ebay_creds(cid="new-fixture"))
+            self.assertTrue(seller_save(GROQ_API_KEY="new-fixture"))
         self.assertTrue(os.path.exists(server.LEGACY_SECRETS_PATH))
-        self.assertEqual(server.load_secrets(), {"ebay_client_id": "new-fixture"})
+        self.assertEqual(server.load_secrets(), {"provider_keys": {"GROQ_API_KEY": "new-fixture"}})
 
 
 class MigrationFallbackTests(IsolatedCredentialPaths):
     """Runs on any platform: the no-DPAPI branch is reached by patching, not by OS."""
 
-    def test_without_dpapi_migration_leaves_the_plaintext_alone(self):
-        self.seed("EBAY_CLIENT_ID=CID-fallback\nEBAY_CLIENT_SECRET=SEC-fallback\n")
-        env_before = self.read()
-        with patch.object(server, "dpapi_available", return_value=False):
+    def test_without_dpapi_the_old_ebay_keys_leave_the_env_file(self):
+        self.seed("GROQ_API_KEY=gsk_keep\nEBAY_CLIENT_ID=CID-fallback\nEBAY_CLIENT_SECRET=SEC-fallback\n")
+        with patch.object(server, "dpapi_available", return_value=False), patch.dict(os.environ):
             captured = io.StringIO()
             with contextlib.redirect_stdout(captured):
-                server.migrate_secrets()
-            self.assertIn("DPAPI unavailable", captured.getvalue())
-        self.assertEqual(self.read(), env_before)
+                server.forget_ebay_keys()
+            self.assertIn("removed the eBay keys", captured.getvalue())
+            self.assertNotIn("SEC-fallback", captured.getvalue())
+        self.assertEqual(self.read(), "GROQ_API_KEY=gsk_keep\n")
         self.assertFalse(os.path.exists(server.SECRETS_PATH))
         self.assertNoTempLeftovers()
 

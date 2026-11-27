@@ -2,6 +2,37 @@
 
 What changed in each version of Marteloio, newest first. Your version is in Settings › About.
 
+## 0.4.0 — not yet released
+
+Marteloio now needs one key, your free AI key, and asks eBay for nothing.
+
+### Removed
+
+- **Look up and Find keywords.** They needed an eBay developer account, an application keyset
+  and an opt-out from eBay's account-deletion notices before the first search. The reference
+  panel, the "Keywords from other sellers" list and each bundle card's Lookup details went
+  with them.
+- **Settings › eBay.** eBay keys saved by an older version are deleted the first time 0.4.0
+  starts. Your AI keys are not touched, and a key file Marteloio can't read is left as it is.
+- References and keyword chips saved inside older drafts. Such a draft opens with your notes,
+  barcode and listing unchanged, and a note says so the first time.
+
+### Added
+
+- **Search eBay.** A link beside the product name, and on each bundle card, opens eBay's own
+  search in your browser for the name, or for the barcode when one is set. Nothing is filled
+  in and no keys are needed.
+
+### Changed
+
+- **The welcome puts the key first.** The three setup steps are now a progress bar under the
+  title, the paste box leads the first step at a larger size, and the four steps to a free
+  Google key sit side by side. Once a key works, those four steps make way for the result.
+  Text in the welcome is larger (16px). Phones keep the full-screen sheet.
+- A barcode that isn't valid is marked at its field as you type, and the line under the
+  product name says it won't be searched.
+- The AI is no longer sent keyword suggestions or references: only what you typed.
+
 ## 0.3.0 — 2026-11-18
 
 eBay is now used for one thing only: looking up other sellers' listings. Marteloio no longer
