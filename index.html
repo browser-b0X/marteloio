@@ -2620,10 +2620,10 @@ const ARCH_ORDER = {
   spec: ["specs", "overview", "highlights", "bundle", "condition", "included", "notes", "policies"],
   minimal: ["overview", "bundle", "specs", "highlights", "condition", "included", "notes", "policies"]
 };
-// css: desktop overrides; mobile: restated inside the phone media query,
-// because archetype rules outrank the plain mobile rules.
+// css: the layout's overrides. One set of sizes for every screen width: the styles sit on the elements
+// (see inlineListingStyles), and a style attribute can't hold a phone-width rule.
 const ARCH_CSS = {
-  classic: { css: "", mobile: "" },
+  classic: { css: "" },
   story: {
     css: `
 /* archetype: story first - narrative up front, highlights before specs */
@@ -2634,11 +2634,6 @@ const ARCH_CSS = {
 .elb-arch-story .elb-title{font-size:30px;}
 .elb-arch-story .elb-h2{text-transform:none;letter-spacing:.01em;font-size:20px;}
 .elb-arch-story .elb-specs{border-width:1px 0;border-radius:0;}
-`,
-    mobile: `
-.elb-arch-story .elb-title{font-size:21px;}
-.elb-arch-story .elb-titleblock{padding:18px 14px 16px;}
-.elb-arch-story .elb-h2{font-size:18px;}
 `
   },
   spec: {
@@ -2648,8 +2643,7 @@ const ARCH_CSS = {
 .elb-arch-spec .elb-specs tr:nth-child(odd){background:none;}
 .elb-arch-spec .elb-specs th{width:38%;background:var(--paper);color:var(--muted);font-size:14px;text-transform:uppercase;letter-spacing:.05em;border-right:1px solid var(--line);}
 .elb-arch-spec .elb-specs td{font-weight:700;}
-`,
-    mobile: ""
+`
   },
   minimal: {
     css: `
@@ -2666,8 +2660,7 @@ const ARCH_CSS = {
 .elb-arch-minimal .elb-specs tr:nth-child(odd){background:none;}
 .elb-arch-minimal .elb-specs th,.elb-arch-minimal .elb-specs td{padding:8px 14px 8px 0;border-top:0;border-bottom:1px solid var(--line);}
 .elb-arch-minimal .elb-specs th{color:var(--muted);font-weight:600;}
-`,
-    mobile: ""
+`
   }
 };
 
@@ -5123,14 +5116,100 @@ const LISTING_BUNDLE_CSS = `
 .elb-cond-na{background:#efefec;color:#5c626c;border:1px solid #d9dadd;}
 .elb-bundle-desc{font-size:15px;color:var(--muted);line-height:1.5;}
 `;
-const LISTING_MOBILE_CSS = `
-.elb-title{font-size:21px;}
-.elb-summary{font-size:16px;}
-.elb-titleblock{padding:20px 14px 18px;}
-.elb-section{padding:18px 14px;}
-.elb-specs th{width:40%;}
-.elb-specs th,.elb-specs td{padding:9px 10px;}
-`;
+/* ---------------- listing styles live on the elements (0.4.0) ----------------
+   eBay's Standard editor, its quick listing form and its app are reported to drop <style> blocks and class
+   names, which left a pasted listing as plain text. The CSS above stays the one place the look is written;
+   inlineListingStyles() copies each rule onto the elements it matches, with its variables resolved, and turns
+   the two drawn-on decorations (the heading bar and the list tick, both ::before) into real elements. Class
+   names stay as inert hooks for the app and its checks. Nothing here can carry a selector, so there is no
+   phone-width rule: the base layout wraps on its own. The mobile summary's inside is never touched (eBay
+   allows only text and <br> there). */
+function parseListingCss(css) {
+  const text = css.replace(/\/\*[\s\S]*?\*\//g, ""), rules = [];
+  let at = 0;
+  while (at < text.length) {
+    const open = text.indexOf("{", at);
+    if (open < 0) break;
+    const selector = text.slice(at, open).trim();
+    if (selector.startsWith("@")) {   // an at-rule's whole block is skipped
+      let depth = 1, end = open + 1;
+      while (end < text.length && depth) { if (text[end] === "{") depth++; else if (text[end] === "}") depth--; end++; }
+      at = end;
+      continue;
+    }
+    const close = text.indexOf("}", open);
+    const decls = text.slice(open + 1, close).split(";").map(part => {
+      const colon = part.indexOf(":");
+      return colon > 0 ? [part.slice(0, colon).trim(), part.slice(colon + 1).trim()] : null;
+    }).filter(Boolean);
+    rules.push({selectors: selector.split(",").map(part => part.trim()).filter(Boolean), decls});
+    at = close + 1;
+  }
+  return rules;
+}
+function selectorWeight(selector) {
+  const plain = selector.replace(/::[a-z-]+/g, "");
+  return (plain.match(/#/g) || []).length * 100 + (plain.match(/\.|\[|:(?!:)/g) || []).length * 10 + (plain.match(/(^|[\s>+~])[a-z]/gi) || []).length;
+}
+function inlineListingStyles(html, css) {
+  const doc = new DOMParser().parseFromString("<body>" + html + "</body>", "text/html"), root = doc.body.firstElementChild;
+  const rules = parseListingCss(css), vars = {};
+  for (const rule of rules) for (const [name, value] of rule.decls) if (name.startsWith("--")) vars[name] = value;
+  const resolve = value => {
+    let out = value;
+    for (let pass = 0; pass < 8 && out.includes("var("); pass++) {
+      out = out.replace(/var\(\s*(--[\w-]+)\s*(?:,\s*([^()]*))?\)/g, (match, name, fallback) => vars[name] ?? (fallback || "").trim());
+    }
+    return out;
+  };
+  const untouched = el => el.tagName === "BR" || Boolean(el.closest('[property="description"]'));
+  const own = new Map(), drawn = new Map();
+  const note = (map, el, entry) => { if (!map.has(el)) map.set(el, []); map.get(el).push(entry); };
+  rules.forEach((rule, order) => {
+    for (const selector of rule.selectors) {
+      if (/:hover|:focus|:active/.test(selector)) continue;
+      const pseudo = selector.match(/::(before|after)$/), base = pseudo ? selector.slice(0, pseudo.index) : selector;
+      let matches;
+      try { matches = doc.querySelectorAll(base); } catch { continue; }
+      for (const el of matches) if (!untouched(el)) note(pseudo ? drawn : own, el, {decls: rule.decls, weight: selectorWeight(selector), order, where: pseudo && pseudo[1]});
+    }
+  });
+  const merged = entries => {
+    const out = new Map();
+    for (const entry of [...entries].sort((a, b) => a.weight - b.weight || a.order - b.order)) {
+      for (const [name, value] of entry.decls) { if (name.startsWith("--")) continue; out.delete(name); out.set(name, resolve(value)); }
+    }
+    return out;
+  };
+  const styleText = map => [...map].map(([name, value]) => name + ":" + value).join(";");
+  for (const [el, entries] of drawn) for (const where of ["before", "after"]) {
+    const mine = entries.filter(entry => entry.where === where);
+    if (!mine.length) continue;
+    const decls = merged(mine);
+    if (decls.get("display") === "none") continue;
+    const content = (decls.get("content") || "").replace(/^["']|["']$/g, "");
+    decls.delete("content");
+    if (decls.get("position") === "absolute") {   // a marker hung in the padding: the same place, without positioning
+      for (const name of ["position", "left", "top", "right", "bottom"]) decls.delete(name);
+      decls.set("display", "inline-block"); decls.set("width", "22px"); decls.set("margin-left", "-22px");
+    } else if (!decls.has("display")) decls.set("display", "inline-block");
+    const mark = doc.createElement("span");
+    mark.setAttribute("aria-hidden", "true");
+    mark.textContent = content;
+    mark.setAttribute("style", styleText(decls));
+    if (where === "before") el.prepend(mark); else el.append(mark);
+  }
+  for (const [el, entries] of own) {
+    const decls = merged(entries);
+    for (const part of (el.getAttribute("style") || "").split(";")) {   // a style already on the element wins
+      const colon = part.indexOf(":");
+      if (colon > 0) { const name = part.slice(0, colon).trim(); decls.delete(name); decls.set(name, part.slice(colon + 1).trim()); }
+    }
+    if (decls.get("position") === "relative") decls.delete("position");
+    if (decls.size) el.setAttribute("style", styleText(decls));
+  }
+  return root.outerHTML;
+}
 function buildListingHTML(d, store, titleOverride, trust, returnsPolicy, mode = state.mode) {
   if ($("styleChoice").value === "simple") return buildSimpleHTML(d, store, titleOverride, returnsPolicy, mode);
   const title = esc(ListingCore.canonicalTitle(titleOverride ?? d.title));
@@ -5217,12 +5296,10 @@ function buildListingHTML(d, store, titleOverride, trust, returnsPolicy, mode = 
   const arch = ARCH_CSS[style.arch] || ARCH_CSS.classic;
   const css =
     '\n.ebay-listing{' + themeVars(style.themeIdx) + '--ink:#111318;--muted:#5c626c;--line:#d9dadd;--ok:#08764b;--ok-bg:#e8f8ef;max-width:920px;margin:0 auto;background:#fff;color:var(--ink);font-family:var(--font-body);font-size:16px;line-height:1.55;}' +
-    LISTING_BASE_CSS + (sections.highlights ? LISTING_HIGHLIGHTS_CSS : "") + (sections.bundle ? LISTING_BUNDLE_CSS : "") + arch.css +
-    '\n/* mobile */\n@media(max-width:640px){' + LISTING_MOBILE_CSS + (sections.bundle ? '.elb-bundle-item{flex:1 1 100%;}\n' : '') + arch.mobile + '}\n';
+    LISTING_BASE_CSS + (sections.highlights ? LISTING_HIGHLIGHTS_CSS : "") + (sections.bundle ? LISTING_BUNDLE_CSS : "") + arch.css;
 
-  return (
+  return inlineListingStyles(
 '<div class="ebay-listing elb-arch-' + style.arch + ' elb-theme-' + style.themeIdx + '">' +
-'<style>' + css + '</style>' +
 ((logo || storeLine || trustLine || vps) ? '<div class="elb-header">' + logo + storeLine + trustLine +
   (vps ? '<div class="elb-vps">' + vps + '</div>' : '') + '</div>' : '') +
 '<div class="elb-titleblock">' +
@@ -5231,7 +5308,7 @@ function buildListingHTML(d, store, titleOverride, trust, returnsPolicy, mode = 
 '</div>' +
 (ARCH_ORDER[style.arch] || ARCH_ORDER.classic).map(key => sections[key] || "").join("") +
 buildBrandSignature() +
-'</div>');
+'</div>', css);
 }
 
 /* ---------------- render ---------------- */

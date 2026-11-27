@@ -32,6 +32,11 @@ Marteloio now needs one key, your free AI key, and asks eBay for nothing.
 - A barcode that isn't valid is marked at its field as you type, and the line under the
   product name says it won't be searched.
 - The AI is no longer sent keyword suggestions or references: only what you typed.
+- **Listings keep their look on eBay.** Every style is now written on its own element instead
+  of in one style block with class names. eBay's Standard editor, quick listing form and app
+  can drop style blocks and class names, which left a pasted listing as plain text. On a
+  computer the listing looks exactly as before; on a phone the title and spacing are a little
+  larger, because a style on an element can't change with the screen width.
 
 ## 0.3.0 — 2026-11-18
 
