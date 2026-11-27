@@ -2,6 +2,15 @@
 
 What changed in each version of Marteloio, newest first. Your version is in Settings › About.
 
+## Unreleased
+
+### Changed
+
+- **The welcome puts the key first.** The three setup steps are now a progress bar under the
+  title, the paste box leads the first step at a larger size, and the four steps to a free
+  Google key sit side by side. Once a key works, those four steps make way for the result.
+  Text in the welcome is larger (16px). Phones keep the full-screen sheet.
+
 ## 0.3.0 — 2026-11-18
 
 eBay is now used for one thing only: looking up other sellers' listings. Marteloio no longer

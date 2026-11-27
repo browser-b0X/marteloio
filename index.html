@@ -1402,7 +1402,8 @@ setAppTheme(readAppTheme());
   .get-key-steps b { color: var(--ink); }
   .get-key-steps .btn { justify-self: start; min-height: 36px; padding: 0 14px; text-decoration: none; }
 
-  /* -- Welcome: a modal with the setup course on the left (A1) -- */
+  /* -- Welcome: key first (2026-11-27). The course is a progress bar in the head, the paste box leads step 1,
+     the four steps to a free key sit in a strip. One column, type at 16px. -- */
   .guide-overlay {
     position: fixed; inset: 0; z-index: 45; display: flex; align-items: center; justify-content: center; padding: 16px;
     background: rgba(17,19,24,.52); animation: overlay-in .16s ease-out;
@@ -1412,37 +1413,48 @@ setAppTheme(readAppTheme());
   .welcome {
     width: min(780px, 100%); height: min(680px, calc(100vh - 32px)); display: flex; flex-direction: column; overflow: hidden;
     background: var(--surface); color: var(--body); border: 1px solid var(--line); border-radius: var(--radius-lg);
-    box-shadow: 0 30px 80px rgba(17,19,24,.35); font: 14.5px/1.55 var(--font); animation: modal-in .18s ease-out;
+    box-shadow: 0 30px 80px rgba(17,19,24,.35); font: 16px/1.55 var(--font); animation: modal-in .18s ease-out;
   }
   .welcome h2, .welcome h3 { margin: 0; font-family: var(--font-brand); color: var(--ink); letter-spacing: -.01em; }
   .welcome h2:focus, .welcome h3:focus { outline: none; }
-  .welcome-head { flex: none; display: flex; align-items: flex-start; gap: 14px; padding: 22px 20px 16px 26px; border-bottom: 1px solid var(--line); }
+  .welcome-head { flex: none; display: flex; align-items: flex-start; gap: 14px; padding: 22px 20px 18px 28px; border-bottom: 1px solid var(--line); }
   .welcome-logo { flex: none; width: 40px; height: 40px; }
-  .welcome-titles { min-width: 0; }
+  .welcome-titles { flex: 1 1 auto; min-width: 0; }
   .welcome-head h2 { font-size: 23px; font-weight: 600; line-height: 1.25; }
-  .welcome-head p { margin: 2px 0 0; color: var(--muted); font-size: 14px; }
+  .welcome-head p { margin: 2px 0 0; color: var(--muted); font-size: 15.5px; }
   .welcome-x { flex: none; margin-left: auto; }
-  .welcome-body { flex: 1 1 auto; min-height: 0; display: grid; grid-template-columns: 196px minmax(0, 1fr); }
-  .welcome-course { list-style: none; margin: 0; padding: 22px 0 22px 26px; border-right: 1px solid var(--line); background: var(--surface-2); }
-  .welcome-course li { position: relative; display: flex; align-items: flex-start; gap: 12px; padding: 0 12px 30px 0; font: 600 14px/1.3 var(--font-brand); color: var(--muted); }
-  .welcome-course li:not(:last-child)::after {
-    content: ""; position: absolute; left: 9px; top: 24px; bottom: 4px; border-left: 2px dashed color-mix(in srgb, var(--primary) 50%, transparent);
-  }
-  .welcome-course small { display: block; margin-top: 3px; font: 500 12.5px/1.35 var(--font); color: var(--muted); }
-  .way { flex: none; position: relative; width: 20px; height: 20px; margin-top: -1px; border-radius: 50%; border: 2px solid var(--line-strong); background: var(--surface); }
+  .welcome-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+  .welcome-course { list-style: none; margin: 14px 0 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .welcome-course li { min-width: 0; font: 600 14px/1.3 var(--font-brand); color: var(--muted); }
+  .welcome-course small { display: block; margin-top: 2px; font: 500 13.5px/1.35 var(--font); color: var(--muted); }
+  .way { display: block; height: 5px; margin-bottom: 8px; border-radius: 3px; background: var(--line); transition: background-color .15s ease-out; }
   .way-short { display: none; }
   .welcome-course .is-now, .welcome-course .is-done { color: var(--ink); }
-  .welcome-course .is-now .way { border-color: var(--primary); background: var(--primary); box-shadow: 0 0 0 5px color-mix(in srgb, var(--primary) 22%, transparent); }
-  .welcome-course .is-done .way { border-color: var(--ok); background: var(--ok); }
-  .welcome-course .is-done .way::after {
-    content: ""; position: absolute; left: 5px; top: 2px; width: 4px; height: 8px; border: solid var(--surface); border-width: 0 2px 2px 0; transform: rotate(45deg);
-  }
-  .welcome-main { min-width: 0; overflow-y: auto; overscroll-behavior: contain; padding: 22px 28px 22px; }
+  .welcome-course .is-now .way { background: var(--primary); }
+  .welcome-course .is-done .way { background: var(--ok); }
+  .welcome-main { flex: 1 1 auto; min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 22px 32px 16px; }
   .welcome-step[hidden] { display: none; }
-  .welcome-step h3 { font-size: 19px; font-weight: 600; line-height: 1.3; }
-  .welcome-step > p { margin: 6px 0 14px; max-width: 56ch; }
-  .welcome .key-paste-row input[type=text] { height: 46px; }
-  .welcome .key-paste-row .btn { min-height: 46px; padding: 0 20px; }
+  .welcome-step h3 { font-size: 20px; font-weight: 600; line-height: 1.3; }
+  .welcome-step > p { margin: 6px 0 14px; max-width: 62ch; }
+  /* The paste box leads step 1: one framed row, the field and Paste at 56px. */
+  .welcome .key-paste-row { padding: 6px; border: 2px solid var(--primary); border-radius: calc(var(--radius) + 4px); background: var(--primary-soft); transition: border-color .15s ease-out, background-color .15s ease-out; }
+  .welcome .key-paste-row:focus-within { box-shadow: 0 0 0 3px rgba(255,90,31, .22); }
+  .welcome .key-paste-row input[type=text] { height: 56px; border-color: transparent; font-size: 16px; }
+  .welcome .key-paste-row input[type=text]:focus { border-color: transparent; box-shadow: none; }
+  .welcome .key-paste-row input[type=text]::placeholder { font-size: 16px; }
+  .welcome .key-paste-row .btn { min-height: 56px; padding: 0 26px; font-size: 16px; }
+  .welcome .key-paste.is-ok .key-paste-row { border-color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, var(--surface)); }
+  .welcome .key-paste.is-ok .key-paste-row input[type=text] { border-color: transparent; }
+  .welcome .key-paste.is-ok .key-paste-row:focus-within { box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent); }
+  .welcome .key-paste-hint { font-size: 13.5px; }
+  /* The four steps to a free key, as a strip; gone once a key works (the result line takes its place). */
+  #welcomeStep0:has(.key-paste.is-ok) .get-key { display: none; }
+  .welcome .get-key { margin-top: 18px; padding-top: 16px; }
+  .welcome .get-key h4 { margin-bottom: 10px; font-size: 16px; }
+  .welcome .get-key-steps { grid-template-columns: minmax(0, 1.3fr) repeat(3, minmax(0, 1fr)); gap: 10px; }
+  .welcome .get-key-steps li { display: block; padding: 12px 14px 14px; border: 1px solid var(--line); border-radius: calc(var(--radius) + 2px); background: var(--surface); font-size: 14.5px; line-height: 1.45; }
+  .welcome .get-key-steps li::before { margin-bottom: 8px; border-radius: 8px; width: 26px; height: 26px; font-size: 13.5px; }
+  .welcome .get-key-steps .btn { min-height: 40px; padding: 0 12px; font-size: 13.5px; white-space: nowrap; }
   .welcome .ai-found { margin-top: 16px; }
   .welcome-note {
     margin: 0 0 14px; padding: 8px 12px; border-radius: var(--radius); background: var(--surface-2); border-left: 3px solid var(--primary);
@@ -1454,7 +1466,7 @@ setAppTheme(readAppTheme());
   .welcome-skip-row { margin-top: 14px; }
   .welcome-tour-actions { display: flex; flex-wrap: wrap; gap: 10px; }
   .welcome-foot { flex: none; display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; padding: 12px 22px 12px 26px; border-top: 1px solid var(--line); background: var(--surface); }
-  .welcome-foot p { flex: 1 1 240px; margin: 0; font-size: 12.8px; line-height: 1.45; color: var(--muted); }
+  .welcome-foot p { flex: 1 1 240px; margin: 0; font-size: 13.5px; line-height: 1.45; color: var(--muted); }
   .welcome-foot .btn { min-height: 42px; }
   .welcome-foot .btn[hidden] { display: none; }
 
@@ -1505,22 +1517,19 @@ setAppTheme(readAppTheme());
   @media (max-width: 520px) {
     .guide-overlay { padding: 0; align-items: stretch; justify-content: stretch; }
     .welcome { width: 100%; height: 100%; border: 0; border-radius: 0; font-size: 15px; }
-    .welcome-head { align-items: center; gap: 10px; padding: 14px 10px 4px 18px; border-bottom: 0; }
+    .welcome-head { align-items: flex-start; gap: 10px; padding: 14px 10px 12px 18px; }
     .welcome-logo { width: 30px; height: 30px; }
     .welcome-head h2 { font-size: 19px; }
     .welcome-head p { display: none; }
     .welcome-body { display: flex; flex-direction: column; }
-    .welcome-course { flex: none; display: flex; align-items: center; padding: 8px 18px 12px; border-right: 0; border-bottom: 1px solid var(--line); background: var(--surface); }
-    .welcome-course li { flex: none; align-items: center; gap: 6px; padding: 0; font-size: 12.5px; }
-    .welcome-course li:not(:last-child) { flex: 1 1 auto; }
-    .welcome-course li:not(:last-child)::after {
-      position: static; flex: 1 1 auto; min-width: 14px; margin: 0 4px 0 2px; border-left: 0;
-      border-top: 2px dashed color-mix(in srgb, var(--primary) 45%, transparent);
-    }
+    .welcome-course { margin-top: 10px; gap: 6px; }
+    .welcome-course li { font-size: 12.5px; }
     .welcome-course small { display: none; }
-    .welcome-course .way { width: 14px; height: 14px; margin-top: 0; }
-    .welcome-course .is-now .way { box-shadow: none; }
-    .welcome-course .is-done .way::after { left: 3px; top: 0; width: 3px; height: 7px; }
+    .way { height: 4px; margin-bottom: 6px; }
+    .welcome .key-paste-row .btn { padding: 0 18px; }
+    .welcome .get-key-steps { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+    .welcome .get-key-steps li { display: grid; grid-template-columns: 26px minmax(0, 1fr); align-items: center; gap: 10px; padding: 0; border: 0; background: none; }
+    .welcome .get-key-steps li::before { margin-bottom: 0; }
     .way-long { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
     .way-short { display: inline; }
     .welcome-main { flex: 1 1 auto; padding: 18px; }
@@ -2108,7 +2117,8 @@ setAppTheme(readAppTheme());
   </div>
 </div>
 
-<!-- Welcome: three short steps on the first run (openWelcome). Esc and × are Skip setup. -->
+<!-- Welcome: three short steps on the first run (openWelcome), key first: the course is a progress bar in the head,
+     the paste box leads the first step. Esc and × are Skip setup. -->
 <div class="guide-overlay" id="welcomeOverlay" hidden>
   <div class="welcome" id="welcome" role="dialog" aria-modal="true" aria-labelledby="welcomeTitle" aria-describedby="welcomeLead">
     <div class="welcome-head">
@@ -2116,15 +2126,15 @@ setAppTheme(readAppTheme());
       <div class="welcome-titles">
         <h2 id="welcomeTitle" tabindex="-1">Welcome to Marteloio</h2>
         <p id="welcomeLead">Three short steps, then you're ready to write your first listing.</p>
+        <ol class="welcome-course" id="welcomeCourse" aria-label="Setup steps">
+          <li data-step="0"><span class="way" aria-hidden="true"></span><span class="way-text"><span class="way-name">Connect AI</span><small>A free key, pasted once</small><span class="sr-only way-state"></span></span></li>
+          <li data-step="1"><span class="way" aria-hidden="true"></span><span class="way-text"><span class="way-name">Your shop</span><small>Optional</small><span class="sr-only way-state"></span></span></li>
+          <li data-step="2"><span class="way" aria-hidden="true"></span><span class="way-text"><span class="way-name"><span class="way-long">Quick tour</span><span class="way-short" aria-hidden="true">Tour</span></span><small>Six stops, one minute</small><span class="sr-only way-state"></span></span></li>
+        </ol>
       </div>
       <button type="button" class="modal-x welcome-x" id="welcomeX" aria-label="Close">&times;</button>
     </div>
     <div class="welcome-body">
-      <ol class="welcome-course" id="welcomeCourse" aria-label="Setup steps">
-        <li data-step="0"><span class="way" aria-hidden="true"></span><span class="way-text"><span class="way-name">Connect AI</span><small>A free key, pasted once</small><span class="sr-only way-state"></span></span></li>
-        <li data-step="1"><span class="way" aria-hidden="true"></span><span class="way-text"><span class="way-name">Your shop</span><small>Optional</small><span class="sr-only way-state"></span></span></li>
-        <li data-step="2"><span class="way" aria-hidden="true"></span><span class="way-text"><span class="way-name"><span class="way-long">Quick tour</span><span class="way-short" aria-hidden="true">Tour</span></span><small>Six stops, one minute</small><span class="sr-only way-state"></span></span></li>
-      </ol>
       <div class="welcome-main" id="welcomeMain">
         <p class="welcome-note" id="welcomeNoAi" hidden>Not connected yet: choose Set up AI at the top of the page when you have a key.</p>
         <section class="welcome-step" id="welcomeStep0" aria-labelledby="welcomeStep0Title">
