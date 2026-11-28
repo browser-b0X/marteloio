@@ -2,7 +2,7 @@
 
 What changed in each version of Marteloio, newest first. Your version is in Settings › About.
 
-## 0.4.0 — not yet released
+## 0.4.0 — 2026-11-27
 
 Marteloio now needs one key, your free AI key, and asks eBay for nothing.
 
