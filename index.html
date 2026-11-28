@@ -1847,6 +1847,7 @@ setAppTheme(readAppTheme());
       </div>
       <button class="btn btn-ghost" id="editContentBtn" type="button" aria-controls="contentEditor" aria-expanded="false" data-tip="editContent" disabled>Edit content</button>
     </div>
+    <p class="notice notice-paste" id="pasteNote" hidden>Paste it into eBay's HTML (&lt; &gt;) view. If the listing loses its look after you edit it on eBay, copy it here again and paste over it.</p>
 
     <p class="hint regen-hint" id="regenHint" hidden></p>
     <p class="notice notice-regen" id="regenNotice" role="status" hidden><span id="regenNoticeText"></span> <button type="button" class="link-btn" id="regenUndoBtn">Undo</button></p>
@@ -2926,6 +2927,7 @@ function renderDraft(note) {
   state.copied = false;
   nextListingNudgeShown = false;
   $("nextListingNudge").hidden = true;
+  $("pasteNote").hidden = true;
   resetBudgetDraftState();
   syncMoreOptions();
   renderContentEditor();
@@ -5504,7 +5506,7 @@ function updateCourse() {
     review: generated && !generating ? (state.copied ? "done" : "now") : "",
     copy: generated && !generating && state.copied ? "done" : ""
   };
-  if (!state.copied) $("nextListingNudge").hidden = true;
+  if (!state.copied) { $("nextListingNudge").hidden = true; $("pasteNote").hidden = true; }
   for (const li of $("courseSteps").children) {
     const status = steps[li.dataset.step];
     li.className = status;
@@ -6271,6 +6273,7 @@ async function copyListingHTML(checked) {
   const ok = await copyText(state.html);
   if (ok) {
     state.copied = true; updateCourse();
+    $("pasteNote").hidden = false;
     showNextListingNudge();
     flashCopyHtmlLabel("COPIED!", 1500, true);
     guideProgress("copied");
