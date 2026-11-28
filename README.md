@@ -1,3 +1,6 @@
+
+
+
 <h1 align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/readme-header-dark.png">
@@ -5,7 +8,7 @@
   </picture>
 </h1>
 
-https://github.com/user-attachments/assets/0ec205ea-b7de-493c-acda-fe280030f106
+https://github.com/user-attachments/assets/59282d9a-47d7-4940-b810-86b75af15dc7
 
 **Details, drafted.** Marteloio is a free, open-source eBay listing generator: it turns the
 notes you jot about an item into an eBay title, item specifics and an HTML description you
