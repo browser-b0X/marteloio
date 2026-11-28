@@ -2,6 +2,14 @@
 
 What changed in each version of Marteloio, newest first. Your version is in Settings › About.
 
+## Next version — not yet released
+
+### Added
+
+- **A paste note under Copy HTML.** After you copy a listing, a line says to paste it into eBay's
+  HTML (< >) view, and to copy it here again and paste over it if the listing loses its look
+  after an edit on eBay.
+
 ## 0.4.0 — 2026-11-27
 
 Marteloio now needs one key, your free AI key, and asks eBay for nothing.

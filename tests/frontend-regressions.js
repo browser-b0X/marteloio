@@ -186,6 +186,34 @@
     }
     /* ---- 0.4.0: no eBay keys. Search eBay is a plain link to eBay's own search; Look up, Find keywords and
        Settings › eBay are gone. Runs at the end of the suite, or alone with ?v040. ---- */
+    async function pasteNoteChecks() {
+      // The note under Copy HTML that says where to paste and what to do when eBay drops the styling after an edit.
+      const settleUi = async () => { for (let i = 0; i < 8; i++) await tick(); };
+      const seen = el => Boolean(el) && !el.closest("[hidden]") && el.getClientRects().length > 0;
+      const NOTE = "Paste it into eBay's HTML (< >) view. If the listing loses its look after you edit it on eBay, copy it here again and paste over it.";
+      newListing();
+      await settleUi();
+      const note = () => $("pasteNote");
+      check(note() && !seen(note()) && note().closest("#outputCard"), "Before a listing is copied, the paste note is not shown");
+      $("productSearch").value = "Canon AE-1 Program"; $("productSearch").dispatchEvent(new Event("input", {bubbles: true}));
+      $("notes").value = "Body, silver. Shutter fires at all speeds."; $("notes").dispatchEvent(new Event("input", {bubbles: true}));
+      $("generateBtn").click();
+      for (let i = 0; i < 200 && !pending.some(request => request.path === "/llm/chat/completions"); i++) await tick();
+      complete(pending.splice(pending.findIndex(request => request.path === "/llm/chat/completions"), 1)[0], listing("Canon AE-1 Program 35mm SLR Film Camera Body Silver"));
+      for (let i = 0; i < 200 && !state.html; i++) await tick();
+      await settleUi();
+      check(state.html && !seen(note()), "A fresh listing that has not been copied shows no paste note");
+      const clip = navigator.clipboard, originalWrite = clip && clip.writeText;
+      if (clip) clip.writeText = async () => {};
+      try { $("copyHtmlBtn").click(); await settleUi(); } finally { if (clip) clip.writeText = originalWrite; }
+      check(state.copied && seen(note()) && note().textContent.trim() === NOTE, "After Copy HTML the paste note says where to paste and to copy again when eBay drops the look");
+      check(note().previousElementSibling === $("copyHtmlBtn").closest(".actions"), "The paste note sits directly under the Copy HTML row");
+      check(note().getBoundingClientRect().right <= document.documentElement.clientWidth + 1, "The paste note fits the width of the page");
+      newListing();
+      await settleUi();
+      check(!seen(note()), "New listing hides the paste note again");
+    }
+
     async function v040Checks() {
       // With ?soft it records failures instead of stopping, so it can be run against 0.3.0 (each check must fail there).
       const soft = new URLSearchParams(location.search).has("soft");
@@ -2476,6 +2504,12 @@
       if (new URLSearchParams(location.search).has("inline")) {
         await inlineChecks();
         title.textContent = passed + " inline-style checks passed";
+        panel.dataset.result = "pass";
+        return;
+      }
+      if (new URLSearchParams(location.search).has("paste")) {
+        await pasteNoteChecks();
+        title.textContent = passed + " paste note checks passed";
         panel.dataset.result = "pass";
         return;
       }
@@ -5006,6 +5040,7 @@
       await qaChecks();
       await v040Checks();
       await inlineChecks();
+      await pasteNoteChecks();
 
       title.textContent = passed + " browser regression checks passed";
       panel.dataset.result = "pass";
